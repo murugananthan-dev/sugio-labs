@@ -74,49 +74,38 @@ class LocalLLMClient:
     ) -> str:
         """
         Sends generation request to local Ollama.
-        If Ollama is unreachable, gracefully falls back to deterministic local rule engine.
+        Raises ConnectionError if Ollama is unreachable.
         """
         target_model = model or settings.default_model
 
-        if await self.is_ollama_online():
-            try:
-                payload = {
-                    "model": target_model,
-                    "prompt": prompt,
-                    "system": system_prompt or "You are Sugio Labs, an expert AI software architect and full-stack developer.",
-                    "stream": False,
-                    "options": {"temperature": temperature},
-                }
-                res = await self.client.post(f"{self.base_url}/api/generate", json=payload, timeout=45.0)
-                if res.status_code == 200:
-                    return res.json().get("response", "").strip()
-            except Exception as e:
-                logger.error(f"Ollama generation failed: {e}. Falling back to internal engine.")
+        if not await self.is_ollama_online():
+            raise ConnectionError(f"Ollama is unreachable at {self.base_url}. Cannot proceed with local AI generation.")
 
-        # Offline / Heuristic Fallback
-        logger.info("Using local heuristic generation engine.")
-        return self._heuristic_fallback(prompt, system_prompt)
+        try:
+            payload = {
+                "model": target_model,
+                "prompt": prompt,
+                "system": system_prompt or "You are Sugio Labs, an expert AI software architect and full-stack developer.",
+                "stream": False,
+                "options": {"temperature": temperature},
+            }
+            res = await self.client.post(f"{self.base_url}/api/generate", json=payload, timeout=45.0)
+            res.raise_for_status()
+            return res.json().get("response", "").strip()
+        except Exception as e:
+            logger.error(f"Ollama generation failed: {e}.")
+            raise ConnectionError(f"Failed to generate using local Ollama model {target_model}: {e}")
 
-    def _heuristic_fallback(self, prompt: str, system_prompt: Optional[str]) -> str:
-        """Deterministic, intelligent response generator when Ollama is offline."""
-        prompt_lower = prompt.lower()
-        if "student" in prompt_lower or "college" in prompt_lower:
-            return (
-                "For a Student Management System, the optimal stack is React (Vite + TypeScript) with a FastAPI backend "
-                "and PostgreSQL. Key modules include Student Profile Management, Course Enrollment, Gradebook, and Attendance Tracker."
-            )
-        elif "recommend" in prompt_lower or "stack" in prompt_lower:
-            return (
-                "Recommended Architecture:\n"
-                "- Frontend: React 18 with TypeScript and Tailwind/Vanilla CSS\n"
-                "- Backend: FastAPI (Python) for async performance\n"
-                "- Database: PostgreSQL with SQLAlchemy ORM\n"
-                "- API: RESTful endpoints with OpenAPI schemas\n"
-                "- Verification: Pytest for backend and Vitest for frontend"
-            )
-        return (
-            "Sugio Labs local engine has processed your requirement. "
-            "Dependencies and cross-layer contracts are verified and synchronized."
+    def get_chat_model(self, model: Optional[str] = None, temperature: float = 0.2):
+        """
+        Returns a LangChain-compatible ChatOllama instance connected to the local Ollama daemon.
+        """
+        from langchain_ollama import ChatOllama
+        target_model = model or settings.default_model
+        return ChatOllama(
+            base_url=self.base_url,
+            model=target_model,
+            temperature=temperature
         )
 
 

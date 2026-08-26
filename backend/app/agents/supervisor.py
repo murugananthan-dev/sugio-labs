@@ -23,10 +23,47 @@ from ..models.schemas import (
 )
 from .requirement_agent import requirement_agent
 from .base import local_llm
+
+from langgraph.graph import StateGraph, START, END
+from typing_extensions import TypedDict
 from ..contract_graph.graph import contract_graph
 from ..permissions.manager import permission_manager
 
 logger = logging.getLogger("sugio_labs.agents.supervisor")
+
+class ChatState(TypedDict):
+    messages: List[Dict[str, str]]
+    language: str
+
+def call_local_model(state: ChatState):
+    """LangGraph node to invoke the local LLM."""
+    prompt = state["messages"][-1]["content"] if state["messages"] else ""
+    sys_prompt = "You are Sugio Labs, an expert AI software architect and development agent."
+    
+    if state["language"] == "ta":
+        sys_prompt += " Respond in Tamil or Tanglish where helpful."
+    elif state["language"] == "tanglish":
+        sys_prompt += " Respond in friendly Tanglish (mix of Tamil and English) to guide the student team."
+
+    # Using the local langchain ChatOllama wrapper
+    try:
+        chat_model = local_llm.get_chat_model()
+        messages = [
+            ("system", sys_prompt),
+            ("user", prompt)
+        ]
+        res = chat_model.invoke(messages)
+        return {"messages": [{"role": "assistant", "content": res.content}]}
+    except ConnectionError as e:
+        logger.error(f"LangGraph execution failed: {e}")
+        return {"messages": [{"role": "assistant", "content": f"System Error: {str(e)}"}]}
+
+# Build minimal StateGraph for chat
+builder = StateGraph(ChatState)
+builder.add_node("agent", call_local_model)
+builder.add_edge(START, "agent")
+builder.add_edge("agent", END)
+chat_graph = builder.compile()
 
 
 class AgentSupervisor:
