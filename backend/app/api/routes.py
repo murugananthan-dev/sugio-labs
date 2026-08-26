@@ -60,27 +60,28 @@ async def list_interview_questions():
     """Lists all preset interview questions."""
     return requirement_agent.get_all_questions()
 
-@router.post("/interview/start")
-async def start_interview():
-    """Initializes a new requirement interview."""
-    first_q = await agent_supervisor.start_interview()
-    return {"question": first_q}
+class PlanningChatPayload(BaseModel):
+    message: str
+    language: str = Field(default="en", description="en, ta, tanglish")
 
-class AnswerPayload(BaseModel):
-    question_id: str
-    answer: str
-
-@router.post("/interview/answer")
-async def submit_answer(payload: AnswerPayload):
-    """Submits an answer and returns next question or the final blueprint."""
-    res = await agent_supervisor.answer_question(payload.question_id, payload.answer)
+@router.post("/chat/planning")
+async def chat_planning(payload: PlanningChatPayload):
+    """
+    Consolidated endpoint for requirement interview and generic chat during the planning phase.
+    Routes user messages through the LangGraph planning workflow.
+    """
+    res = await agent_supervisor.invoke_planning_turn(payload.message, payload.language)
     return res
 
-@router.post("/blueprint/approve")
-async def approve_blueprint():
-    """Approves active blueprint and initializes the Contract Graph."""
+class BlueprintDecisionPayload(BaseModel):
+    decision: str = Field(..., description="APPROVE, REJECT, EDIT")
+    modifications: Optional[str] = Field(default=None, description="Requested edits if decision is EDIT")
+
+@router.post("/blueprint/decision")
+async def handle_blueprint_decision(payload: BlueprintDecisionPayload):
+    """Handles explicit user approval of the generated Project Blueprint."""
     try:
-        res = await agent_supervisor.approve_blueprint()
+        res = await agent_supervisor.handle_blueprint_decision(payload.decision, payload.modifications)
         return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -214,24 +215,7 @@ async def get_session_state():
     state["checkpoints"] = git_tool.list_checkpoints()
     return state
 
-class ChatPayload(BaseModel):
-    message: str
-    language: str = Field(default="en", description="en, ta, tanglish")
-
+# Deprecated original chat endpoint (now mapped to /chat/planning)
 @router.post("/chat")
-async def chat_with_agent(payload: ChatPayload):
-    """Interacts with Sugio Labs supervisor with multilingual assistance."""
-    from ..agents.supervisor import chat_graph
-    
-    state = {
-        "messages": [{"role": "user", "content": payload.message}],
-        "language": payload.language
-    }
-    
-    # LangGraph invocation
-    result_state = chat_graph.invoke(state)
-    
-    # Extract assistant's reply from updated state messages
-    response = result_state["messages"][-1]["content"] if result_state["messages"] else "No response generated."
-    
-    return {"reply": response, "language": payload.language}
+async def legacy_chat(payload: PlanningChatPayload):
+    return await chat_planning(payload)

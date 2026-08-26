@@ -1,7 +1,9 @@
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Annotated
 from datetime import datetime
 from pydantic import BaseModel, Field
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
 
 # ============================================================================
 # 1. PERMISSION SYSTEM SCHEMAS
@@ -107,6 +109,25 @@ class RequirementSpec(BaseModel):
     testing_stack: str = Field(default="Pytest + Vitest")
     ui_preferences: str = Field(default="Dark Modern Glassmorphic")
     extra_requirements: Optional[str] = Field(default=None)
+    
+class PartialRequirementExtraction(BaseModel):
+    """Used for structured output from the LLM during the interview phase."""
+    extracted_spec: RequirementSpec = Field(..., description="The current known project requirements.")
+    missing_fields: List[str] = Field(default_factory=list, description="Fields that still need user clarification.")
+    is_complete: bool = Field(default=False, description="True if enough info exists to generate a comprehensive blueprint.")
+    next_question: str = Field(default="", description="The exact question to ask the user next, based on missing fields.")
+
+class PlanningState(TypedDict):
+    """LangGraph state for the planning workflow."""
+    session_id: str
+    messages: Annotated[List[Any], add_messages]
+    detected_language: str
+    requirements: RequirementSpec
+    requirements_complete: bool
+    current_question: Optional[str]
+    blueprint: Optional['ProjectBlueprint']
+    approval_status: str  # WAITING_FOR_APPROVAL, APPROVED, REJECTED, EDIT
+    errors: List[str]
 
 class ProjectBlueprint(BaseModel):
     project_name: str

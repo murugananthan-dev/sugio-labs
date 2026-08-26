@@ -20,50 +20,44 @@ from ..models.schemas import (
     PermissionResponse,
     PermissionDecision,
     PermissionAction,
+    PlanningState,
 )
 from .requirement_agent import requirement_agent
+from .blueprint_agent import blueprint_agent
 from .base import local_llm
 
 from langgraph.graph import StateGraph, START, END
-from typing_extensions import TypedDict
 from ..contract_graph.graph import contract_graph
 from ..permissions.manager import permission_manager
 
 logger = logging.getLogger("sugio_labs.agents.supervisor")
 
-class ChatState(TypedDict):
-    messages: List[Dict[str, str]]
-    language: str
+# Graph Nodes
+def requirement_node(state: PlanningState) -> PlanningState:
+    """Invokes RequirementAgent to update Requirements and decide on next question."""
+    return requirement_agent.process(state)
 
-def call_local_model(state: ChatState):
-    """LangGraph node to invoke the local LLM."""
-    prompt = state["messages"][-1]["content"] if state["messages"] else ""
-    sys_prompt = "You are Sugio Labs, an expert AI software architect and development agent."
-    
-    if state["language"] == "ta":
-        sys_prompt += " Respond in Tamil or Tanglish where helpful."
-    elif state["language"] == "tanglish":
-        sys_prompt += " Respond in friendly Tanglish (mix of Tamil and English) to guide the student team."
+def blueprint_node(state: PlanningState) -> PlanningState:
+    """Invokes BlueprintAgent to generate architecture blueprint from requirements."""
+    return blueprint_agent.process(state)
 
-    # Using the local langchain ChatOllama wrapper
-    try:
-        chat_model = local_llm.get_chat_model()
-        messages = [
-            ("system", sys_prompt),
-            ("user", prompt)
-        ]
-        res = chat_model.invoke(messages)
-        return {"messages": [{"role": "assistant", "content": res.content}]}
-    except ConnectionError as e:
-        logger.error(f"LangGraph execution failed: {e}")
-        return {"messages": [{"role": "assistant", "content": f"System Error: {str(e)}"}]}
+# Edge Routing Condition
+def is_planning_complete(state: PlanningState) -> str:
+    """Routes based on whether requirements gathering is complete."""
+    if state.get("requirements_complete"):
+        return "blueprint_node"
+    return END
 
-# Build minimal StateGraph for chat
-builder = StateGraph(ChatState)
-builder.add_node("agent", call_local_model)
-builder.add_edge(START, "agent")
-builder.add_edge("agent", END)
-chat_graph = builder.compile()
+# Build Planning StateGraph
+builder = StateGraph(PlanningState)
+builder.add_node("requirement_node", requirement_node)
+builder.add_node("blueprint_node", blueprint_node)
+
+builder.add_edge(START, "requirement_node")
+builder.add_conditional_edges("requirement_node", is_planning_complete)
+builder.add_edge("blueprint_node", END)
+
+planning_graph = builder.compile()
 
 
 class AgentSupervisor:
@@ -74,11 +68,22 @@ class AgentSupervisor:
 
     def __init__(self):
         self.active_session_id: str = str(uuid.uuid4())
-        self.current_question_index: int = 0
-        self.collected_answers: Dict[str, str] = {}
-        self.current_blueprint: Optional[ProjectBlueprint] = None
         self.activity_logs: List[AgentActivityLog] = []
         self._ws_broadcast = None
+        
+        # Internal state memory for the planning graph
+        from ..models.schemas import RequirementSpec
+        self.planning_state: PlanningState = {
+            "session_id": self.active_session_id,
+            "messages": [],
+            "detected_language": "en",
+            "requirements": RequirementSpec(),
+            "requirements_complete": False,
+            "current_question": None,
+            "blueprint": None,
+            "approval_status": "NONE",
+            "errors": []
+        }
 
     def set_ws_broadcast(self, broadcast_fn):
         """Sets the callback function to push messages to connected WebSocket clients."""
@@ -110,90 +115,66 @@ class AgentSupervisor:
 
         return log_entry
 
-    async def start_interview(self) -> RequirementQuestion:
-        """Starts a new requirement interview from question 0."""
-        self.current_question_index = 0
-        self.collected_answers.clear()
-        self.current_blueprint = None
-
-        await self.log_activity(
-            step="Interview Initialized",
-            agent_name="RequirementAgent",
-            status="running",
-            details="Starting requirement gathering session with intelligent recommendations.",
-        )
-
-        q = requirement_agent.get_question(0)
-        return q
-
-    async def answer_question(self, question_id: str, answer: str) -> Dict[str, Any]:
-        """
-        Receives an answer for the current question, records it, and returns the next question or the final blueprint.
-        """
-        self.collected_answers[question_id] = answer
-        self.current_question_index += 1
-
-        await self.log_activity(
-            step=f"Answer Recorded for {question_id}",
-            agent_name="RequirementAgent",
-            status="completed",
-            details=f"User selected: '{answer}'",
-        )
-
-        next_q = requirement_agent.get_question(self.current_question_index)
-        if next_q:
-            return {"status": "next_question", "question": next_q.model_dump(mode="json")}
-
-        # All questions answered, generate blueprint
-        await self.log_activity(
-            step="Synthesizing Blueprint",
-            agent_name="ArchitectureAgent",
-            status="running",
-            details="Creating comprehensive Project Blueprint from interview responses.",
-        )
-
-        blueprint = requirement_agent.generate_blueprint_from_answers(self.collected_answers)
-        self.current_blueprint = blueprint
-
-        await self.log_activity(
-            step="Blueprint Generated",
-            agent_name="ArchitectureAgent",
-            status="completed",
-            details=f"Blueprint for '{blueprint.project_name}' created. Awaiting user approval.",
-        )
-
-        return {"status": "blueprint_ready", "blueprint": blueprint.model_dump(mode="json")}
-
-    async def approve_blueprint(self) -> Dict[str, Any]:
-        """Marks current blueprint as approved and populates the Contract Graph."""
-        if not self.current_blueprint:
-            raise ValueError("No active blueprint to approve.")
-
-        self.current_blueprint.approved = True
-
-        await self.log_activity(
-            step="Blueprint Approved",
-            agent_name="Supervisor",
-            status="completed",
-            details="User approved the architecture blueprint. Building Contract Graph nodes.",
-        )
-
-        # Build contract graph for the project
-        contract_graph.build_sample_graph()
-
-        await self.log_activity(
-            step="Contract Graph Constructed",
-            agent_name="ContractGraphEngine",
-            status="completed",
-            details="Cross-layer Contract Graph initialized with synchronized Frontend, API, Backend, DB, and Test nodes.",
-        )
-
-        return {
-            "status": "success",
-            "message": "Blueprint approved and Contract Graph synchronized.",
-            "blueprint": self.current_blueprint.model_dump(mode="json"),
-            "graph": contract_graph.export_graph().model_dump(mode="json"),
+    async def invoke_planning_turn(self, user_message: str, language: str) -> Dict[str, Any]:
+        """Runs the LangGraph planning workflow for one interaction turn."""
+        from langchain_core.messages import HumanMessage
+        
+        # Block if waiting for approval
+        if self.planning_state.get("approval_status") == "WAITING_FOR_APPROVAL":
+            return {
+                "status": "blocked",
+                "message": "Waiting for explicit user approval of the Project Blueprint.",
+                "state": self.get_session_state()
+            }
+            
+        self.planning_state["detected_language"] = language
+        self.planning_state["messages"].append(HumanMessage(content=user_message))
+        
+        # Run graph
+        result_state = planning_graph.invoke(self.planning_state)
+        self.planning_state = result_state  # persist
+        
+        response = {
+            "status": "planning",
+            "requirements_complete": result_state["requirements_complete"],
+            "current_question": result_state.get("current_question"),
+            "approval_status": result_state.get("approval_status"),
         }
+        
+        if result_state.get("blueprint"):
+            response["blueprint"] = result_state["blueprint"].model_dump(mode="json")
+            
+        return response
+
+    async def handle_blueprint_decision(self, decision: str, modifications: Optional[str] = None) -> Dict[str, Any]:
+        """Handles APPROVE, REJECT, EDIT for the generated blueprint."""
+        if self.planning_state.get("approval_status") != "WAITING_FOR_APPROVAL":
+            raise ValueError("No blueprint is currently pending approval.")
+            
+        if decision == "APPROVE":
+            self.planning_state["approval_status"] = "APPROVED"
+            if self.planning_state["blueprint"]:
+                self.planning_state["blueprint"].approved = True
+                contract_graph.build_sample_graph()  # Initialize Graph
+            await self.log_activity("Blueprint Approved", "Supervisor", "completed", "User approved blueprint.")
+            
+        elif decision == "REJECT":
+            self.planning_state["approval_status"] = "REJECTED"
+            await self.log_activity("Blueprint Rejected", "Supervisor", "completed", "User rejected blueprint.")
+            
+        elif decision == "EDIT":
+            from langchain_core.messages import HumanMessage
+            self.planning_state["approval_status"] = "EDIT"
+            self.planning_state["requirements_complete"] = False
+            self.planning_state["blueprint"] = None
+            if modifications:
+                self.planning_state["messages"].append(HumanMessage(content=f"User requested edits: {modifications}"))
+            await self.log_activity("Blueprint Edit Requested", "Supervisor", "completed", "User requested changes to requirements.")
+            
+        else:
+            raise ValueError(f"Invalid decision: {decision}")
+            
+        return {"status": "success", "approval_status": self.planning_state["approval_status"]}
 
     async def handle_change_request(self, change_description: str) -> Dict[str, Any]:
         """
@@ -257,11 +238,12 @@ class AgentSupervisor:
     def get_session_state(self) -> Dict[str, Any]:
         """Returns snapshot of current supervisor state."""
         return {
-            "session_id": self.active_session_id,
-            "question_index": self.current_question_index,
-            "answers": self.collected_answers,
-            "has_blueprint": self.current_blueprint is not None,
-            "blueprint": self.current_blueprint.model_dump(mode="json") if self.current_blueprint else None,
+            "session_id": self.planning_state["session_id"],
+            "requirements_complete": self.planning_state["requirements_complete"],
+            "current_question": self.planning_state["current_question"],
+            "has_blueprint": self.planning_state["blueprint"] is not None,
+            "blueprint": self.planning_state["blueprint"].model_dump(mode="json") if self.planning_state["blueprint"] else None,
+            "approval_status": self.planning_state["approval_status"],
             "graph": contract_graph.export_graph().model_dump(mode="json"),
             "pending_permissions": [p.model_dump(mode="json") for p in permission_manager.get_pending_requests().values()],
             "hardware": local_llm.get_hardware_profile(),
