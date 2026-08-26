@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, CheckCircle2, X, Database, Server, Layout, FileText, AlertTriangle } from 'lucide-react';
+import { Layers, CheckCircle2, X, Database } from 'lucide-react';
 import { ProjectBlueprint } from '../types';
 
 interface BlueprintModalProps {

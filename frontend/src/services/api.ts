@@ -11,167 +11,131 @@ import {
   MCPToolDefinition,
 } from '../types';
 
-const API_BASE = 'http://127.0.0.1:8000/api/v1';
-const WS_URL = 'ws://127.0.0.1:8000/ws';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/v1';
+
+async function fetchWrapper<T>(url: string, options?: RequestInit): Promise<T> {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => 'Unknown Error');
+      throw new Error(`API Error ${res.status}: ${errorText}`);
+    }
+    return res.json();
+  } catch (err) {
+    console.error(`Fetch failed for ${url}`, err);
+    throw err;
+  }
+}
 
 export async function fetchHealth(): Promise<HealthStatus> {
-  const res = await fetch(`${API_BASE}/health`);
-  if (!res.ok) throw new Error('Failed to fetch health status');
-  return res.json();
+  return fetchWrapper<HealthStatus>(`${API_BASE}/health`);
 }
 
 export async function fetchHardware(): Promise<HardwareProfile> {
-  const res = await fetch(`${API_BASE}/system/hardware`);
-  if (!res.ok) throw new Error('Failed to fetch hardware profile');
-  return res.json();
+  return fetchWrapper<HardwareProfile>(`${API_BASE}/system/hardware`);
 }
 
 export async function startInterview(): Promise<{ question: RequirementQuestion }> {
-  const res = await fetch(`${API_BASE}/interview/start`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to start interview');
-  return res.json();
+  return fetchWrapper<{ question: RequirementQuestion }>(`${API_BASE}/interview/start`, { method: 'POST' });
 }
 
 export async function submitAnswer(
   questionId: string,
   answer: string
 ): Promise<{ status: 'next_question' | 'blueprint_ready'; question?: RequirementQuestion; blueprint?: ProjectBlueprint }> {
-  const res = await fetch(`${API_BASE}/interview/answer`, {
+  return fetchWrapper(`${API_BASE}/interview/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question_id: questionId, answer }),
   });
-  if (!res.ok) throw new Error('Failed to submit answer');
-  return res.json();
 }
 
 export async function approveBlueprint(): Promise<{ status: string; blueprint: ProjectBlueprint; graph: ContractGraphData }> {
-  const res = await fetch(`${API_BASE}/blueprint/approve`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to approve blueprint');
-  return res.json();
+  return fetchWrapper(`${API_BASE}/blueprint/approve`, { method: 'POST' });
 }
 
 export async function fetchContractGraph(): Promise<ContractGraphData> {
-  const res = await fetch(`${API_BASE}/contract-graph`);
-  if (!res.ok) throw new Error('Failed to fetch contract graph');
-  return res.json();
+  return fetchWrapper<ContractGraphData>(`${API_BASE}/contract-graph`);
 }
 
 export async function resetSampleGraph(): Promise<{ status: string; graph: ContractGraphData }> {
-  const res = await fetch(`${API_BASE}/contract-graph/sample`, { method: 'POST' });
-  if (!res.ok) throw new Error('Failed to reset sample graph');
-  return res.json();
+  return fetchWrapper(`${API_BASE}/contract-graph/sample`, { method: 'POST' });
 }
 
 export async function submitImpactAnalysis(
   targetEntity: string,
   changeDescription: string
 ): Promise<{ impact_report: ImpactReport; permission_request: PermissionRequest }> {
-  const res = await fetch(`${API_BASE}/impact-analysis`, {
+  return fetchWrapper(`${API_BASE}/impact-analysis`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target_entity: targetEntity, change_description: changeDescription }),
   });
-  if (!res.ok) throw new Error('Failed to execute impact analysis');
-  return res.json();
 }
 
 export async function fetchPendingPermissions(): Promise<PermissionRequest[]> {
-  const res = await fetch(`${API_BASE}/permissions/pending`);
-  if (!res.ok) throw new Error('Failed to fetch pending permissions');
-  return res.json();
+  return fetchWrapper<PermissionRequest[]>(`${API_BASE}/permissions/pending`);
 }
 
 export async function submitPermissionDecision(
   decision: PermissionResponse
 ): Promise<{ request_id: string; decision: string; granted: boolean }> {
-  const res = await fetch(`${API_BASE}/permissions/decision`, {
+  return fetchWrapper(`${API_BASE}/permissions/decision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(decision),
   });
-  if (!res.ok) throw new Error('Failed to submit permission decision');
-  return res.json();
 }
 
 export async function fetchSessionState(): Promise<any> {
-  const res = await fetch(`${API_BASE}/session/state`);
-  if (!res.ok) throw new Error('Failed to fetch session state');
-  return res.json();
+  return fetchWrapper(`${API_BASE}/session/state`);
 }
 
 export async function sendChatMessage(
   message: string,
   language: string = 'en'
 ): Promise<{ reply: string; language: string }> {
-  const res = await fetch(`${API_BASE}/chat`, {
+  return fetchWrapper(`${API_BASE}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, language }),
   });
-  if (!res.ok) throw new Error('Failed to send chat message');
-  return res.json();
 }
 
 // Git Checkpoints & Rollback APIs
 export async function fetchCheckpoints(): Promise<GitCheckpoint[]> {
-  const res = await fetch(`${API_BASE}/git/checkpoints`);
-  if (!res.ok) throw new Error('Failed to fetch checkpoints');
-  return res.json();
+  return fetchWrapper<GitCheckpoint[]>(`${API_BASE}/git/checkpoints`);
 }
 
 export async function createCheckpoint(name: string, description: string = ''): Promise<{ status: string; checkpoint: GitCheckpoint }> {
-  const res = await fetch(`${API_BASE}/git/checkpoint`, {
+  return fetchWrapper(`${API_BASE}/git/checkpoint`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, description }),
   });
-  if (!res.ok) throw new Error('Failed to create checkpoint');
-  return res.json();
 }
 
 export async function rollbackToCheckpoint(checkpointId: string): Promise<{ status: string; rolled_back_to: string }> {
-  const res = await fetch(`${API_BASE}/git/rollback`, {
+  return fetchWrapper(`${API_BASE}/git/rollback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ checkpoint_id: checkpointId }),
   });
-  if (!res.ok) throw new Error('Failed to execute rollback');
-  return res.json();
 }
 
 export async function fetchGitDiff(): Promise<{ diff: string }> {
-  const res = await fetch(`${API_BASE}/git/diff`);
-  if (!res.ok) throw new Error('Failed to fetch git diff');
-  return res.json();
+  return fetchWrapper<{ diff: string }>(`${API_BASE}/git/diff`);
 }
 
 // Sandboxed Shell & MCP
 export async function executeShellCommand(command: string): Promise<any> {
-  const res = await fetch(`${API_BASE}/shell/execute`, {
+  return fetchWrapper(`${API_BASE}/shell/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ command }),
   });
-  if (!res.ok) throw new Error('Failed to execute shell command');
-  return res.json();
 }
 
 export async function fetchMCPTools(): Promise<MCPToolDefinition[]> {
-  const res = await fetch(`${API_BASE}/mcp/tools`);
-  if (!res.ok) throw new Error('Failed to fetch MCP tools');
-  return res.json();
-}
-
-export function createWebSocketConnection(onMessage: (data: any) => void): WebSocket {
-  const ws = new WebSocket(WS_URL);
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onMessage(data);
-    } catch (e) {
-      console.error('Error parsing WebSocket message', e);
-    }
-  };
-  return ws;
+  return fetchWrapper<MCPToolDefinition[]>(`${API_BASE}/mcp/tools`);
 }
