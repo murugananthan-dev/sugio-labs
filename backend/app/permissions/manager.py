@@ -30,6 +30,8 @@ class PermissionManager:
         self._project_permissions: Dict[str, Set[str]] = {}
         # Pending requests awaiting user decision: request_id -> (request, async_future/callback)
         self._pending_requests: Dict[str, PermissionRequest] = {}
+        # Tracks consumed ALLOW_ONCE grants: set of permission keys that may be used exactly once
+        self._one_time_grants: Set[str] = set()
         # Callback to broadcast permission requests to connected WebSockets
         self._broadcast_callback: Optional[Callable[[PermissionRequest], Awaitable[None]]] = None
 
@@ -69,14 +71,28 @@ class PermissionManager:
         target: str,
         project_id: Optional[str] = "default",
     ) -> bool:
-        """Checks if the action on target has already been granted 'allow_for_project'."""
+        """
+        Checks if the action on target has been granted.
+        Covers two grant types:
+        - ALLOW_FOR_PROJECT: persistent, stored in _project_permissions.
+        - ALLOW_ONCE: single-use, stored in _one_time_grants and consumed here.
+        """
         if not settings.strict_permissions:
             return True
-            
+
         key = self._permission_key(action, target)
+
+        # Check persistent project-level grant
         if project_id and project_id in self._project_permissions:
             if key in self._project_permissions[project_id] or f"{action.value}:*" in self._project_permissions[project_id]:
                 return True
+
+        # Check and consume a one-time grant
+        if key in self._one_time_grants:
+            self._one_time_grants.discard(key)
+            logger.info(f"Consumed one-time grant for: {key}")
+            return True
+
         return False
 
     async def request_permission(
@@ -139,7 +155,10 @@ class PermissionManager:
             return True
 
         elif response.decision == PermissionDecision.ALLOW_ONCE:
-            logger.info(f"Granted single-use permission for request {req.id}")
+            # Store the one-time grant so is_action_permitted() can verify and consume it
+            key = self._permission_key(req.action, req.target)
+            self._one_time_grants.add(key)
+            logger.info(f"Granted single-use permission for request {req.id} (key: {key})")
             return True
 
         else: # REJECT
