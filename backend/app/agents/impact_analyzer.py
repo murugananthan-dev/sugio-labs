@@ -1,6 +1,6 @@
 import logging
 from typing import Dict, Any, List, Optional
-from ..contract_graph.graph import contract_graph_engine
+from ..contract_graph.graph import contract_graph as contract_graph_engine
 from ..models.schemas import ImpactReport, ContractViolation, ContractNodeType
 
 logger = logging.getLogger("sugio_labs.agents.impact_analyzer")
@@ -17,7 +17,7 @@ class ImpactAnalyzer:
         Example: 'Add mandatory phone number to Student' or 'Change phone to phone_number'
         """
         prompt_lower = prompt.lower()
-        graph_data = contract_graph_engine.get_graph_data()
+        graph_data = contract_graph_engine.export_graph()
         
         affected_fe: List[str] = []
         affected_be: List[str] = []
