@@ -1,14 +1,9 @@
 import React, { useState } from 'react';
 import {
   CheckCircle,
-  FileCode,
   Database,
   Network,
-  ShieldAlert,
   Layers,
-  FolderTree,
-  ArrowRight,
-  Sparkles,
 } from 'lucide-react';
 import { ProjectBlueprint } from '../types';
 
@@ -214,8 +209,9 @@ export const BlueprintView: React.FC<BlueprintViewProps> = ({
                   </div>
                   <ul className="space-y-1 font-mono text-[11px] text-slate-300">
                     {table.columns.map((col, cIdx) => (
-                      <li key={cIdx} className="p-1 rounded hover:bg-white/5 flex items-center justify-between">
-                        <span>{col}</span>
+                      <li key={cIdx} className="p-1 rounded hover:bg-white/5 flex flex-col justify-center">
+                        <span>{col.name}</span>
+                        <span className="text-[10px] text-slate-500">({col.type}) {col.constraints}</span>
                       </li>
                     ))}
                   </ul>

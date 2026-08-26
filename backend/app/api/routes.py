@@ -221,12 +221,17 @@ class ChatPayload(BaseModel):
 @router.post("/chat")
 async def chat_with_agent(payload: ChatPayload):
     """Interacts with Sugio Labs supervisor with multilingual assistance."""
-    prompt = payload.message
-    sys_prompt = "You are Sugio Labs, an expert AI software architect and development agent."
-    if payload.language == "ta":
-        sys_prompt += " Respond in Tamil or Tanglish where helpful."
-    elif payload.language == "tanglish":
-        sys_prompt += " Respond in friendly Tanglish (mix of Tamil and English) to guide the student team."
-
-    response = await local_llm.generate(prompt=prompt, system_prompt=sys_prompt)
+    from ..agents.supervisor import chat_graph
+    
+    state = {
+        "messages": [{"role": "user", "content": payload.message}],
+        "language": payload.language
+    }
+    
+    # LangGraph invocation
+    result_state = chat_graph.invoke(state)
+    
+    # Extract assistant's reply from updated state messages
+    response = result_state["messages"][-1]["content"] if result_state["messages"] else "No response generated."
+    
     return {"reply": response, "language": payload.language}

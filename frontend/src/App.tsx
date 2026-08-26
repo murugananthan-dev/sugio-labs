@@ -30,15 +30,22 @@ import {
   submitImpactAnalysis,
   fetchPendingPermissions,
   submitPermissionDecision,
-  createWebSocketConnection,
 } from './services/api';
+import { useGlobalState } from './context/GlobalContext';
+import { useWebSocket } from './services/useWebSocket';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('interview');
-  const [health, setHealth] = useState<HealthStatus | null>(null);
-  const [hardware, setHardware] = useState<HardwareProfile | null>(null);
   const [language, setLanguage] = useState<string>('en');
-  const [voiceEnabled, setVoiceEnabled] = useState<boolean>(true);
+
+  const {
+    health, setHealth,
+    hardware, setHardware,
+    pendingPermission, setPendingPermission,
+    activityLogs, appendActivityLog,
+    voiceEnabled, setVoiceEnabled,
+    speakAnnouncement
+  } = useGlobalState();
 
   // Wizard State
   const [currentQuestion, setCurrentQuestion] = useState<RequirementQuestion | null>(null);
@@ -56,21 +63,19 @@ export const App: React.FC = () => {
   const [impactReport, setImpactReport] = useState<ImpactReport | null>(null);
   const [impactLoading, setImpactLoading] = useState<boolean>(false);
 
-  // Permission & Activity State
-  const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
-  const [activityLogs, setActivityLogs] = useState<AgentActivityLog[]>([]);
+  // Use WebSocket for realtime events
+  const handleWsMessage = useCallback((data: any) => {
+    if (data.type === 'activity_log' && data.payload) {
+      appendActivityLog(data.payload);
+    } else if (data.type === 'permission_required' && data.payload) {
+      setPendingPermission(data.payload);
+      speakAnnouncement(`Permission required for ${data.payload.action}`);
+    } else if (data.type === 'graph_update' && data.payload) {
+      setGraphData(data.payload);
+    }
+  }, [appendActivityLog, setPendingPermission, speakAnnouncement]);
 
-  // Speech synthesizer
-  const speakAnnouncement = useCallback(
-    (text: string) => {
-      if (!voiceEnabled || !('speechSynthesis' in window)) return;
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
-      window.speechSynthesis.speak(utterance);
-    },
-    [voiceEnabled]
-  );
+  const { isConnected } = useWebSocket(handleWsMessage);
 
   // Initial Load
   useEffect(() => {
@@ -99,23 +104,7 @@ export const App: React.FC = () => {
     };
 
     initData();
-
-    // Setup WebSocket
-    const ws = createWebSocketConnection((data) => {
-      if (data.type === 'activity_log' && data.payload) {
-        setActivityLogs((prev) => [...prev, data.payload]);
-      } else if (data.type === 'permission_required' && data.payload) {
-        setPendingPermission(data.payload);
-        speakAnnouncement(`Permission required for ${data.payload.action}`);
-      } else if (data.type === 'graph_update' && data.payload) {
-        setGraphData(data.payload);
-      }
-    });
-
-    return () => {
-      ws.close();
-    };
-  }, [speakAnnouncement]);
+  }, [setHealth, setHardware, setGraphData, setPendingPermission]);
 
   // Handle Wizard Answer
   const handleWizardAnswer = async (questionId: string, answer: string) => {

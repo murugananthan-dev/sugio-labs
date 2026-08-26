@@ -104,7 +104,7 @@ export interface ProjectBlueprint {
   frontend_modules: Array<{ name: string; path: string; purpose: string }>;
   backend_modules: Array<{ name: string; path: string; purpose: string }>;
   api_endpoints: Array<{ method: string; path: string; description: string }>;
-  db_schema: Array<{ table: string; columns: string[] }>;
+  db_schema: Array<{ table: string; columns: Array<{ name: string; type: string; constraints: string }> }>;
   folder_structure: string[];
   testing_strategy: string;
   development_steps: string[];
