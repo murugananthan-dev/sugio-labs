@@ -1,7 +1,7 @@
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage
 from ..models.schemas import (
-    PlanningState,
+    AppState,
     ProjectBlueprint,
 )
 from .base import local_llm
@@ -22,7 +22,7 @@ class BlueprintAgent:
             "and API endpoint structures. Keep it professional and complete."
         )
 
-    def process(self, state: PlanningState) -> PlanningState:
+    def process(self, state: AppState) -> AppState:
         logger.info("BlueprintAgent generating architecture blueprint...")
         
         chat_model = local_llm.get_chat_model(temperature=0.2)

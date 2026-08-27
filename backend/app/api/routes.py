@@ -86,6 +86,18 @@ async def handle_blueprint_decision(payload: BlueprintDecisionPayload):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+class ExecutionDecisionPayload(BaseModel):
+    decision: str = Field(..., description="APPROVE, REJECT, EDIT")
+
+@router.post("/execution/decision")
+async def handle_execution_decision(payload: ExecutionDecisionPayload):
+    """Handles explicit user approval of the generated Execution Plan."""
+    try:
+        res = await agent_supervisor.handle_execution_decision(payload.decision)
+        return res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============================================================================
 # 3. CONTRACT GRAPH & IMPACT ANALYSIS

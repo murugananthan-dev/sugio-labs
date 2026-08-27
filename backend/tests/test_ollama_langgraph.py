@@ -3,7 +3,7 @@ import httpx
 from httpx import Response
 from unittest.mock import patch, AsyncMock
 from app.agents.base import LocalLLMClient
-from app.agents.supervisor import planning_graph
+from app.agents.supervisor import app_graph as planning_graph
 
 @pytest.mark.asyncio
 async def test_ollama_offline_raises_error():

@@ -2,7 +2,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from ..models.schemas import (
-    PlanningState,
+    AppState,
     RequirementSpec,
     PartialRequirementExtraction,
 )
@@ -28,7 +28,7 @@ class RequirementAgent:
             "Do not demand excessive detail. Aim for a solid MVP foundation."
         )
 
-    def process(self, state: PlanningState) -> PlanningState:
+    def process(self, state: AppState) -> AppState:
         """Processes the state to extract requirements and determine the next question."""
         logger.info("RequirementAgent processing current state...")
         

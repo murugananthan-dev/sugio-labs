@@ -23,6 +23,11 @@ def mock_agents():
             "current_question": None,
             "blueprint": None,
             "approval_status": "NONE",
+            "execution_plan": None,
+            "execution_approval_status": "NONE",
+            "current_step_index": 0,
+            "execution_results": [],
+            "git_checkpoint_id": None,
             "errors": []
         }
          
@@ -102,13 +107,17 @@ def test_approve_behavior():
     agent_supervisor.planning_state["blueprint"] = bp
     
     with patch("app.agents.supervisor.contract_graph.build_sample_graph") as mock_cg, \
-         patch("app.agents.supervisor.AgentSupervisor.log_activity"):
+         patch("app.agents.supervisor.AgentSupervisor.log_activity"), \
+         patch("app.agents.supervisor.execution_planner_node") as mock_ep_node:
+        # side_effect=lambda s: s passes state through unchanged, preserving APPROVED + execution_approval_status
+        mock_ep_node.side_effect = lambda s: dict(s, execution_approval_status="WAITING_FOR_EXECUTION_APPROVAL")
         response = client.post("/api/v1/blueprint/decision", json={"decision": "APPROVE"})
         
         assert response.status_code == 200
         assert agent_supervisor.planning_state["approval_status"] == "APPROVED"
         assert agent_supervisor.planning_state["blueprint"].approved is True
         assert mock_cg.called
+        assert mock_ep_node.called
 
 def test_reject_behavior():
     agent_supervisor.planning_state["approval_status"] = "WAITING_FOR_APPROVAL"

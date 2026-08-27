@@ -20,10 +20,14 @@ from ..models.schemas import (
     PermissionResponse,
     PermissionDecision,
     PermissionAction,
-    PlanningState,
+    AppState,
+    ExecutionPlan,
+    ExecutionResult,
 )
 from .requirement_agent import requirement_agent
 from .blueprint_agent import blueprint_agent
+from .execution_planner import execution_planner
+from .coding_agent import coding_agent
 from .base import local_llm
 
 from langgraph.graph import StateGraph, START, END
@@ -33,31 +37,105 @@ from ..permissions.manager import permission_manager
 logger = logging.getLogger("sugio_labs.agents.supervisor")
 
 # Graph Nodes
-def requirement_node(state: PlanningState) -> PlanningState:
+def requirement_node(state: AppState) -> AppState:
     """Invokes RequirementAgent to update Requirements and decide on next question."""
     return requirement_agent.process(state)
 
-def blueprint_node(state: PlanningState) -> PlanningState:
+def blueprint_node(state: AppState) -> AppState:
     """Invokes BlueprintAgent to generate architecture blueprint from requirements."""
-    return blueprint_agent.process(state)
+    state = blueprint_agent.process(state)
+    state["approval_status"] = "WAITING_FOR_APPROVAL"
+    return state
 
-# Edge Routing Condition
-def is_planning_complete(state: PlanningState) -> str:
+def execution_planner_node(state: AppState) -> AppState:
+    """Invokes ExecutionPlanner to map out execution steps."""
+    return execution_planner.process(state)
+
+async def git_checkpoint_node(state: AppState) -> AppState:
+    """Takes a git checkpoint before modifying code."""
+    from ..tools.git_tools import GitTool
+    git_tool = GitTool()
+    cp = git_tool.create_checkpoint(name=f"auto_before_exec_{state['session_id'][:6]}", description="Automatic checkpoint before agent execution.")
+    state["git_checkpoint_id"] = cp.id
+    return state
+
+async def coding_agent_node(state: AppState) -> AppState:
+    """Executes one step from the execution plan."""
+    return await coding_agent.process(state)
+
+async def validation_node(state: AppState) -> AppState:
+    """Validates the execution step."""
+    from ..tools.shell_tools import ShellTool
+    
+    idx = state.get("current_step_index", 0)
+    plan = state.get("execution_plan")
+    
+    if not plan or idx >= len(plan.ordered_steps):
+        return state
+        
+    step = plan.ordered_steps[idx]
+    
+    # Check if there are commands to validate
+    if step.commands:
+        shell_tool = ShellTool()
+        try:
+            for cmd in step.commands:
+                # We assume permissions are granted at the project level, otherwise this would fail
+                await shell_tool.execute(cmd)
+        except Exception as e:
+            logger.error(f"Validation failed for step {step.title}: {e}")
+            from ..models.schemas import ExecutionResult, ExecutionStatus
+            res = ExecutionResult(step_id=step.id, success=False, error=str(e))
+            state["execution_results"].append(res)
+            step.status = ExecutionStatus.FAILED
+            step.result_details = str(e)
+            return state
+
+    # Increment index if successful
+    state["current_step_index"] += 1
+    return state
+
+# Edge Routing Conditions
+def is_planning_complete(state: AppState) -> str:
     """Routes based on whether requirements gathering is complete."""
     if state.get("requirements_complete"):
         return "blueprint_node"
     return END
 
-# Build Planning StateGraph
-builder = StateGraph(PlanningState)
+def after_checkpoint(state: AppState) -> str:
+    return "coding_agent_node"
+
+def has_more_steps(state: AppState) -> str:
+    plan = state.get("execution_plan")
+    idx = state.get("current_step_index", 0)
+    
+    if plan and idx < len(plan.ordered_steps):
+        # Stop graph execution if a step failed
+        if idx > 0 and plan.ordered_steps[idx - 1].status == "failed":
+             return END
+        return "coding_agent_node"
+    return END
+
+# Build StateGraph
+builder = StateGraph(AppState)
 builder.add_node("requirement_node", requirement_node)
 builder.add_node("blueprint_node", blueprint_node)
+builder.add_node("execution_planner_node", execution_planner_node)
+builder.add_node("git_checkpoint_node", git_checkpoint_node)
+builder.add_node("coding_agent_node", coding_agent_node)
+builder.add_node("validation_node", validation_node)
 
 builder.add_edge(START, "requirement_node")
 builder.add_conditional_edges("requirement_node", is_planning_complete)
-builder.add_edge("blueprint_node", END)
+builder.add_edge("blueprint_node", END) # Halts for Blueprint Approval
 
-planning_graph = builder.compile()
+# These nodes are manually triggered via handle_blueprint_decision and execution_turn
+builder.add_edge("execution_planner_node", END) # Halts for Execution Approval
+builder.add_edge("git_checkpoint_node", "coding_agent_node")
+builder.add_edge("coding_agent_node", "validation_node")
+builder.add_conditional_edges("validation_node", has_more_steps)
+
+app_graph = builder.compile()
 
 
 class AgentSupervisor:
@@ -73,7 +151,7 @@ class AgentSupervisor:
         
         # Internal state memory for the planning graph
         from ..models.schemas import RequirementSpec
-        self.planning_state: PlanningState = {
+        self.planning_state: AppState = {
             "session_id": self.active_session_id,
             "messages": [],
             "detected_language": "en",
@@ -82,6 +160,11 @@ class AgentSupervisor:
             "current_question": None,
             "blueprint": None,
             "approval_status": "NONE",
+            "execution_plan": None,
+            "execution_approval_status": "NONE",
+            "current_step_index": 0,
+            "execution_results": [],
+            "git_checkpoint_id": None,
             "errors": []
         }
 
@@ -131,7 +214,7 @@ class AgentSupervisor:
         self.planning_state["messages"].append(HumanMessage(content=user_message))
         
         # Run graph
-        result_state = planning_graph.invoke(self.planning_state)
+        result_state = app_graph.invoke(self.planning_state)
         self.planning_state = result_state  # persist
         
         response = {
@@ -155,8 +238,14 @@ class AgentSupervisor:
             self.planning_state["approval_status"] = "APPROVED"
             if self.planning_state["blueprint"]:
                 self.planning_state["blueprint"].approved = True
-                contract_graph.build_sample_graph()  # Initialize Graph
+                contract_graph.build_sample_graph()  # Initialize Contract Graph
             await self.log_activity("Blueprint Approved", "Supervisor", "completed", "User approved blueprint.")
+            
+            # Call execution_planner_node directly — avoids re-running the full graph from START.
+            # The planning graph halts at END after blueprint_node; resuming via ainvoke() would
+            # restart requirement gathering. Direct node dispatch is the correct MVP approach.
+            logger.info("Blueprint Approved. Dispatching ExecutionPlannerAgent directly.")
+            self.planning_state = execution_planner_node(self.planning_state)
             
         elif decision == "REJECT":
             self.planning_state["approval_status"] = "REJECTED"
@@ -175,6 +264,53 @@ class AgentSupervisor:
             raise ValueError(f"Invalid decision: {decision}")
             
         return {"status": "success", "approval_status": self.planning_state["approval_status"]}
+
+    async def handle_execution_decision(self, decision: str) -> Dict[str, Any]:
+        """Handles APPROVE, REJECT, EDIT for the generated execution plan."""
+        if self.planning_state.get("execution_approval_status") != "WAITING_FOR_EXECUTION_APPROVAL":
+            raise ValueError("No execution plan is currently pending approval.")
+            
+        if decision == "APPROVE":
+            self.planning_state["execution_approval_status"] = "APPROVED"
+            await self.log_activity("Execution Plan Approved", "Supervisor", "completed", "User approved execution plan.")
+            
+            # Execute the plan node-by-node directly.
+            # git_checkpoint_node → coding_agent_node → validation_node (loops via has_more_steps).
+            # We call these directly rather than re-invoking app_graph.ainvoke() from START,
+            # which would incorrectly restart requirement gathering.
+            logger.info("Execution Plan Approved. Running git checkpoint + coding + validation pipeline.")
+            state = await git_checkpoint_node(self.planning_state)
+            
+            plan = state.get("execution_plan")
+            if plan:
+                for _ in range(len(plan.ordered_steps)):
+                    state = await coding_agent_node(state)
+                    state = await validation_node(state)
+                    # Stop early if a step failed
+                    idx = state.get("current_step_index", 0)
+                    if idx > 0 and plan.ordered_steps[idx - 1].status == "failed":
+                        logger.warning(f"Execution halted early at step index {idx} due to failure.")
+                        break
+            
+            self.planning_state = state
+            
+        elif decision == "REJECT":
+            self.planning_state["execution_approval_status"] = "REJECTED"
+            await self.log_activity("Execution Plan Rejected", "Supervisor", "completed", "User rejected execution plan.")
+            
+        elif decision == "EDIT":
+            self.planning_state["execution_approval_status"] = "EDIT"
+            self.planning_state["execution_plan"] = None
+            await self.log_activity("Execution Plan Edit Requested", "Supervisor", "completed", "User requested changes to execution plan.")
+            # Re-run the execution planner directly so the user gets a revised plan
+            logger.info("Execution Plan edit requested. Re-dispatching ExecutionPlannerAgent.")
+            self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
+            self.planning_state = execution_planner_node(self.planning_state)
+            
+        else:
+            raise ValueError(f"Invalid decision: {decision}")
+            
+        return {"status": "success", "execution_approval_status": self.planning_state["execution_approval_status"]}
 
     async def handle_change_request(self, change_description: str) -> Dict[str, Any]:
         """
@@ -236,7 +372,9 @@ class AgentSupervisor:
         }
 
     def get_session_state(self) -> Dict[str, Any]:
-        """Returns snapshot of current supervisor state."""
+        """Returns snapshot of current supervisor state, including execution plan progress."""
+        plan: Optional[ExecutionPlan] = self.planning_state.get("execution_plan")
+        results: List[ExecutionResult] = self.planning_state.get("execution_results", [])
         return {
             "session_id": self.planning_state["session_id"],
             "requirements_complete": self.planning_state["requirements_complete"],
@@ -244,6 +382,14 @@ class AgentSupervisor:
             "has_blueprint": self.planning_state["blueprint"] is not None,
             "blueprint": self.planning_state["blueprint"].model_dump(mode="json") if self.planning_state["blueprint"] else None,
             "approval_status": self.planning_state["approval_status"],
+            # Execution plan fields
+            "has_execution_plan": plan is not None,
+            "execution_plan": plan.model_dump(mode="json") if plan else None,
+            "execution_approval_status": self.planning_state.get("execution_approval_status", "NONE"),
+            "current_step_index": self.planning_state.get("current_step_index", 0),
+            "execution_results": [r.model_dump(mode="json") for r in results],
+            "checkpoint_id": self.planning_state.get("git_checkpoint_id"),
+            # Infrastructure
             "graph": contract_graph.export_graph().model_dump(mode="json"),
             "pending_permissions": [p.model_dump(mode="json") for p in permission_manager.get_pending_requests().values()],
             "hardware": local_llm.get_hardware_profile(),

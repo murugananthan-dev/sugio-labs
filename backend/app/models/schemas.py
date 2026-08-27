@@ -117,8 +117,41 @@ class PartialRequirementExtraction(BaseModel):
     is_complete: bool = Field(default=False, description="True if enough info exists to generate a comprehensive blueprint.")
     next_question: str = Field(default="", description="The exact question to ask the user next, based on missing fields.")
 
-class PlanningState(TypedDict):
-    """LangGraph state for the planning workflow."""
+class ExecutionStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WAITING_PERMISSION = "waiting_permission"
+
+class ExecutionStep(BaseModel):
+    id: str = Field(..., description="Step identifier, e.g., 'setup_db'")
+    title: str = Field(..., description="Short title of the step")
+    description: str = Field(..., description="Detailed explanation of what this step accomplishes")
+    files_to_read: List[str] = Field(default_factory=list, description="Paths of files to inspect before modification")
+    files_to_modify: List[str] = Field(default_factory=list, description="Paths of files to create, update, or delete")
+    commands: List[str] = Field(default_factory=list, description="Shell commands required for this step")
+    dependencies: List[str] = Field(default_factory=list, description="IDs of steps that must complete before this one")
+    risk_level: str = Field(default="low", description="low, medium, high")
+    requires_permission: bool = Field(default=True, description="Whether this step requires user permission to execute")
+    status: ExecutionStatus = Field(default=ExecutionStatus.PENDING)
+    result_details: Optional[str] = Field(default=None, description="Output or error details from execution")
+
+class ExecutionPlan(BaseModel):
+    blueprint_context: str = Field(..., description="Summary of the blueprint driving this plan")
+    ordered_steps: List[ExecutionStep] = Field(default_factory=list, description="Sequential steps to execute")
+    overall_risk: str = Field(default="medium", description="Overall risk of the execution plan")
+    estimated_affected_files: int = Field(default=0, description="Number of files expected to change")
+    validation_strategy: str = Field(..., description="How the execution will be validated (e.g., specific pytest commands)")
+
+class ExecutionResult(BaseModel):
+    step_id: str
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+class AppState(TypedDict):
+    """LangGraph state for the full workflow (Planning & Execution)."""
     session_id: str
     messages: Annotated[List[Any], add_messages]
     detected_language: str
@@ -127,6 +160,12 @@ class PlanningState(TypedDict):
     current_question: Optional[str]
     blueprint: Optional['ProjectBlueprint']
     approval_status: str  # WAITING_FOR_APPROVAL, APPROVED, REJECTED, EDIT
+    
+    execution_plan: Optional[ExecutionPlan]
+    execution_approval_status: str  # NONE, WAITING_FOR_EXECUTION_APPROVAL, APPROVED, REJECTED, EDIT
+    current_step_index: int
+    execution_results: List[ExecutionResult]
+    git_checkpoint_id: Optional[str]  # renamed from checkpoint_id to avoid LangGraph reserved channel conflict
     errors: List[str]
 
 class ProjectBlueprint(BaseModel):
