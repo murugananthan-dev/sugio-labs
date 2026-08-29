@@ -232,9 +232,7 @@ interface ExecutionPlanViewProps {
   executionResults: ExecutionResult[];
   loading: boolean;
   checkpointId: string | null;
-  onApprove: () => void;
-  onReject: () => void;
-  onEdit: (instructions: string) => void;
+  onDecision: (decision: 'APPROVE' | 'REJECT' | 'EDIT' | 'FIX' | 'RETRY' | 'ROLLBACK', modifications?: string) => void;
 }
 
 export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
@@ -244,11 +242,9 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
   executionResults,
   loading,
   checkpointId,
-  onApprove,
-  onReject,
-  onEdit,
+  onDecision,
 }) => {
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState<false | 'EDIT' | 'FIX'>(false);
   const [editInstructions, setEditInstructions] = useState('');
 
   const resultsByStepId = Object.fromEntries(
@@ -267,7 +263,7 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
   const handleEditSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editInstructions.trim()) return;
-    onEdit(editInstructions.trim());
+    onDecision(editMode === 'FIX' ? 'FIX' : 'EDIT', editInstructions.trim());
     setEditMode(false);
     setEditInstructions('');
   };
@@ -383,7 +379,7 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
       )}
 
       {/* ─── Approval Controls (when waiting) ─── */}
-      {isWaiting && !editMode && (
+      {isWaiting && !editMode && failCount === 0 && (
         <div className="glass-panel p-5 border border-amber-500/20 bg-amber-950/10">
           <p className="text-sm text-amber-200 mb-4 font-medium">
             Review the execution plan above. The agent will take a git checkpoint before modifying any files.
@@ -391,7 +387,7 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
           </p>
           <div className="flex flex-wrap gap-3">
             <button
-              onClick={onApprove}
+              onClick={() => onDecision('APPROVE')}
               disabled={loading}
               className="btn-emerald"
               id="execution-approve-btn"
@@ -400,7 +396,7 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
               <span>{loading ? 'Starting Execution…' : 'Approve & Execute'}</span>
             </button>
             <button
-              onClick={() => setEditMode(true)}
+              onClick={() => setEditMode('EDIT')}
               disabled={loading}
               className="btn-secondary"
               id="execution-edit-btn"
@@ -409,13 +405,48 @@ export const ExecutionPlanView: React.FC<ExecutionPlanViewProps> = ({
               <span>Request Revision</span>
             </button>
             <button
-              onClick={onReject}
+              onClick={() => onDecision('REJECT')}
               disabled={loading}
               className="btn-danger"
               id="execution-reject-btn"
             >
               <XCircle className="w-4 h-4" />
               <span>Cancel Execution</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Failure Controls (when waiting and failed) ─── */}
+      {isWaiting && !editMode && failCount > 0 && (
+        <div className="glass-panel p-5 border border-rose-500/30 bg-rose-950/20">
+          <p className="text-sm text-rose-200 mb-4 font-medium">
+            Execution failed at step {currentStepIndex + 1}. Please choose how to proceed:
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => setEditMode('FIX')}
+              disabled={loading}
+              className="btn-primary"
+            >
+              <FilePen className="w-4 h-4" />
+              <span>Suggest Fix</span>
+            </button>
+            <button
+              onClick={() => onDecision('RETRY')}
+              disabled={loading}
+              className="btn-secondary"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>Retry Step</span>
+            </button>
+            <button
+              onClick={() => onDecision('ROLLBACK')}
+              disabled={loading}
+              className="btn-danger"
+            >
+              <GitBranch className="w-4 h-4" />
+              <span>Rollback Checkpoint</span>
             </button>
           </div>
         </div>

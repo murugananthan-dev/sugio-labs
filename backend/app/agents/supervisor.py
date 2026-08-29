@@ -325,7 +325,7 @@ class AgentSupervisor:
 
         return {"status": "success", "approval_status": self.planning_state["approval_status"]}
 
-    async def handle_execution_decision(self, decision: str) -> Dict[str, Any]:
+    async def handle_execution_decision(self, decision: str, modifications: str = None) -> Dict[str, Any]:
         """Handles APPROVE, REJECT, EDIT for the generated execution plan."""
         if self.planning_state.get("execution_approval_status") != "WAITING_FOR_EXECUTION_APPROVAL":
             raise ValueError("No execution plan is currently pending approval.")
@@ -337,6 +337,10 @@ class AgentSupervisor:
             # STEP 1: Git checkpoint — hard gate before any mutation.
             # git_checkpoint_node sets execution_approval_status=FAILED on error.
             logger.info("Running git checkpoint before any code mutation.")
+            
+            if self._ws_broadcast:
+                await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_STARTED, payload={}))
+                
             state = await git_checkpoint_node(self.planning_state)
 
             # If checkpoint failed, do not proceed with any execution.
@@ -365,8 +369,15 @@ class AgentSupervisor:
                         "CodingAgent", "running",
                         f"Step ID: {current_step.id}, Risk: {current_step.risk_level}"
                     )
+                    
+                    if self._ws_broadcast:
+                        await self._ws_broadcast(WSMessage(type=WSMessageType.STEP_STARTED, payload={"step_id": current_step.id}))
 
                     state = await coding_agent_node(state)
+                    
+                    if self._ws_broadcast:
+                        await self._ws_broadcast(WSMessage(type=WSMessageType.VALIDATION_STARTED, payload={"step_id": current_step.id}))
+                        
                     state = await validation_node(state)
 
                     # Inspect result after this iteration
@@ -390,6 +401,14 @@ class AgentSupervisor:
                             f"Suggestion: {suggestion.value}. Checkpoint: {state.get('git_checkpoint_id')}."
                         )
                         self.planning_state = state
+                        
+                        if self._ws_broadcast:
+                            await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_FAILED, payload={
+                                "step_id": prev_step.id,
+                                "reason": prev_step.result_details,
+                                "suggestion": suggestion.value
+                            }))
+                            
                         return {
                             "status": "failed",
                             "execution_approval_status": state.get("execution_approval_status"),
@@ -400,6 +419,9 @@ class AgentSupervisor:
                                 "suggestion": suggestion.value,
                             }
                         }
+                    
+                    if self._ws_broadcast:
+                        await self._ws_broadcast(WSMessage(type=WSMessageType.STEP_COMPLETED, payload={"step_id": prev_step.id}))
 
                     # All steps consumed — exit the loop cleanly
                     if completed_idx >= len(plan.ordered_steps):
@@ -414,6 +436,9 @@ class AgentSupervisor:
                 "Execution Complete", "Supervisor", "completed",
                 f"All steps completed. Checkpoint: {state.get('git_checkpoint_id')}."
             )
+            
+            if self._ws_broadcast:
+                await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_COMPLETED, payload={}))
 
         elif decision == "REJECT":
             self.planning_state["execution_approval_status"] = "REJECTED"
@@ -427,6 +452,56 @@ class AgentSupervisor:
             logger.info("Execution Plan edit requested. Re-dispatching ExecutionPlannerAgent.")
             self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
             self.planning_state = execution_planner_node(self.planning_state)
+            
+        elif decision == "FIX":
+            from langchain_core.messages import HumanMessage
+            if modifications:
+                self.planning_state["messages"].append(HumanMessage(content=f"Fix failed step: {modifications}"))
+            self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
+            self.planning_state = execution_planner_node(self.planning_state)
+            await self.log_activity("Execution Fix Requested", "Supervisor", "completed", "User requested fix for failed step.")
+            
+        elif decision == "RETRY":
+            # Reset current step status
+            from ..models.schemas import ExecutionStatus
+            plan = self.planning_state.get("execution_plan")
+            idx = self.planning_state.get("current_step_index", 0)
+            if plan and idx < len(plan.ordered_steps):
+                step = plan.ordered_steps[idx]
+                step.status = ExecutionStatus.PENDING
+                step.result_details = None
+            self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
+            await self.log_activity("Execution Retry Requested", "Supervisor", "completed", "User requested retry for failed step.")
+            return await self.handle_execution_decision("APPROVE")
+            
+        elif decision == "ROLLBACK":
+            from ..tools.git_tools import GitTool
+            from pathlib import Path
+            cp_id = self.planning_state.get("git_checkpoint_id")
+            ws = self.planning_state.get("workspace")
+            if not cp_id:
+                raise ValueError("No checkpoint available for rollback.")
+            
+            project_root = Path(ws.root_path) if ws else None
+            git_tool = GitTool(project_root=project_root, session_id=self.active_session_id)
+            
+            try:
+                git_tool.rollback_to_checkpoint(cp_id)
+                self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
+                
+                # Reset execution progress
+                self.planning_state["current_step_index"] = 0
+                self.planning_state["execution_results"] = []
+                plan = self.planning_state.get("execution_plan")
+                if plan:
+                    from ..models.schemas import ExecutionStatus
+                    for step in plan.ordered_steps:
+                        step.status = ExecutionStatus.PENDING
+                        step.result_details = None
+                        
+                await self.log_activity("Rollback Successful", "Supervisor", "completed", f"Rolled back to {cp_id}")
+            except Exception as e:
+                raise ValueError(f"Rollback failed: {e}")
 
         else:
             raise ValueError(f"Invalid decision: {decision}")
@@ -625,6 +700,7 @@ class AgentSupervisor:
             "graph": contract_graph.export_graph().model_dump(mode="json"),
             "pending_permissions": [p.model_dump(mode="json") for p in permission_manager.get_pending_requests().values()],
             "hardware": local_llm.get_hardware_profile(),
+            "workspace": self.planning_state.get("workspace").model_dump(mode="json") if self.planning_state.get("workspace") else None,
         }
 
 

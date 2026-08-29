@@ -5,6 +5,34 @@ from pydantic import BaseModel, Field
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
+class WorkspaceMode(str, Enum):
+    CREATE_NEW = "CREATE_NEW"
+    IMPORT_EXISTING = "IMPORT_EXISTING"
+
+class ProjectWorkspace(BaseModel):
+    project_id: str
+    project_name: str
+    root_path: str
+    mode: WorkspaceMode
+    detected_stack: Dict[str, str] = Field(default_factory=dict)
+    git_enabled: bool = False
+    status: str = "active"
+
+class ProjectScanResult(BaseModel):
+    project_name: str
+    root_path: str
+    detected_languages: List[str] = Field(default_factory=list)
+    detected_frameworks: List[str] = Field(default_factory=list)
+    frontend_detected: bool = False
+    backend_detected: bool = False
+    database_hints: List[str] = Field(default_factory=list)
+    test_framework_hints: List[str] = Field(default_factory=list)
+    git_status: str = "disabled"
+    important_files: List[str] = Field(default_factory=list)
+    ignored_directories: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 # ============================================================================
 # 1. PERMISSION SYSTEM SCHEMAS
 # ============================================================================
@@ -183,6 +211,7 @@ class ExecutionFailureReport(BaseModel):
 class AppState(TypedDict):
     """LangGraph state for the full workflow (Planning & Execution)."""
     session_id: str
+    workspace: Optional[ProjectWorkspace]
     messages: Annotated[List[Any], add_messages]
     detected_language: str
     requirements: RequirementSpec
@@ -260,6 +289,19 @@ class WSMessageType(str, Enum):
     VOICE_UPDATE = "voice_update"
     VERIFICATION_RESULT = "verification_result"
     ERROR_ALERT = "error_alert"
+    EXECUTION_STARTED = "execution_started"
+    CHECKPOINT_CREATED = "checkpoint_created"
+    STEP_STARTED = "step_started"
+    FILE_READ = "file_read"
+    FILE_CREATED = "file_created"
+    FILE_MODIFIED = "file_modified"
+    VALIDATION_STARTED = "validation_started"
+    VALIDATION_RESULT = "validation_result"
+    STEP_COMPLETED = "step_completed"
+    EXECUTION_FAILED = "execution_failed"
+    EXECUTION_COMPLETED = "execution_completed"
+    FIX_SUGGESTED = "fix_suggested"
+    ROLLBACK_AVAILABLE = "rollback_available"
 
 class WSMessage(BaseModel):
     type: WSMessageType
