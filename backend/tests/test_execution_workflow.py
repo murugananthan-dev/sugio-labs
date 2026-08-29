@@ -86,10 +86,12 @@ async def test_execution_approve_triggers_checkpoint_and_coding():
     
     with patch("app.agents.supervisor.AgentSupervisor.log_activity"), \
          patch("app.tools.git_tools.GitTool.create_checkpoint") as mock_git, \
+         patch("app.agents.coding_agent.local_llm.is_ollama_online", new=AsyncMock(return_value=True)), \
+         patch("app.agents.coding_agent.local_llm.generate", new=AsyncMock(return_value="[]")), \
          patch("app.tools.shell_tools.ShellTool.execute", new_callable=AsyncMock) as mock_shell:
          
         mock_git.return_value = MagicMock(id="checkpoint-123")
-        mock_shell.return_value = {"exit_code": 0, "stdout": "ok", "stderr": ""}
+        mock_shell.return_value = {"exit_code": 0, "stdout": "ok", "stderr": "", "success": True}
         
         response = client.post("/api/v1/execution/decision", json={"decision": "APPROVE"})
         

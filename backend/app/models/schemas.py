@@ -150,6 +150,36 @@ class ExecutionResult(BaseModel):
     output: Optional[str] = None
     error: Optional[str] = None
 
+# ============================================================================
+# 3b. EXECUTION ENGINE — GENERATED FILE CHANGE & FAILURE REPORTING
+# ============================================================================
+
+class FileOperation(str, Enum):
+    CREATE = "CREATE"
+    MODIFY = "MODIFY"
+    # DELETE is intentionally absent — not permitted in Phase 6
+
+class GeneratedFileChange(BaseModel):
+    """Structured file-write intent produced by the CodingAgent via local Ollama."""
+    path: str = Field(..., description="Sandbox-relative file path, e.g. 'src/models/student.py'")
+    operation: FileOperation = Field(..., description="CREATE or MODIFY only")
+    content: str = Field(..., description="Full file content to write")
+    reason: str = Field(default="", description="Why this file change is needed")
+
+class FailureSuggestion(str, Enum):
+    FIX = "FIX"
+    RETRY = "RETRY"
+    ROLLBACK = "ROLLBACK"
+
+class ExecutionFailureReport(BaseModel):
+    """Returned when execution fails mid-plan. Suggests next user action."""
+    failed_step_id: str
+    reason: str
+    checkpoint_id: Optional[str] = None
+    suggestion: FailureSuggestion = FailureSuggestion.ROLLBACK
+    validation_output: Optional[str] = None
+    validation_stderr: Optional[str] = None
+
 class AppState(TypedDict):
     """LangGraph state for the full workflow (Planning & Execution)."""
     session_id: str
