@@ -52,11 +52,29 @@ def execution_planner_node(state: AppState) -> AppState:
     return execution_planner.process(state)
 
 async def git_checkpoint_node(state: AppState) -> AppState:
-    """Takes a git checkpoint before modifying code."""
+    """Takes a git checkpoint before modifying code.
+
+    HARD GATE: If checkpoint creation fails, sets execution_approval_status to
+    FAILED and returns immediately. No file mutations may proceed without a
+    successful checkpoint.
+    """
     from ..tools.git_tools import GitTool
     git_tool = GitTool()
-    cp = git_tool.create_checkpoint(name=f"auto_before_exec_{state['session_id'][:6]}", description="Automatic checkpoint before agent execution.")
-    state["git_checkpoint_id"] = cp.id
+    try:
+        cp = git_tool.create_checkpoint(
+            name=f"auto_before_exec_{state['session_id'][:6]}",
+            description="Automatic checkpoint before agent execution."
+        )
+        state["git_checkpoint_id"] = cp.id
+        logger.info(f"Git checkpoint created: {cp.id}")
+    except Exception as exc:
+        reason = f"Git checkpoint creation failed: {exc}. Execution blocked — no files will be modified."
+        logger.error(reason)
+        state["execution_approval_status"] = "FAILED"
+        if "errors" not in state:
+            state["errors"] = []
+        state["errors"].append(reason)
+        # Do NOT set git_checkpoint_id — absence is the hard gate in CodingAgent
     return state
 
 async def coding_agent_node(state: AppState) -> AppState:
@@ -64,34 +82,76 @@ async def coding_agent_node(state: AppState) -> AppState:
     return await coding_agent.process(state)
 
 async def validation_node(state: AppState) -> AppState:
-    """Validates the execution step."""
+    """Validates the execution step by running its declared shell commands.
+
+    Permission note: ShellTool.execute() carries its own single permission check.
+    We do NOT call is_action_permitted() here before the tool call — that would
+    consume ALLOW_ONCE grants and break single-use semantics.
+
+    Failure rules:
+    - PermissionDeniedError → step stays IN_PROGRESS, returns (user must grant)
+    - Non-zero exit code → step FAILED (never auto-rollback)
+    - Exception → step FAILED
+    """
     from ..tools.shell_tools import ShellTool
-    
+    from ..permissions.manager import PermissionDeniedError
+    from ..models.schemas import ExecutionResult, ExecutionStatus
+
     idx = state.get("current_step_index", 0)
     plan = state.get("execution_plan")
-    
+
     if not plan or idx >= len(plan.ordered_steps):
         return state
-        
-    step = plan.ordered_steps[idx]
-    
-    # Check if there are commands to validate
-    if step.commands:
-        shell_tool = ShellTool()
-        try:
-            for cmd in step.commands:
-                # We assume permissions are granted at the project level, otherwise this would fail
-                await shell_tool.execute(cmd)
-        except Exception as e:
-            logger.error(f"Validation failed for step {step.title}: {e}")
-            from ..models.schemas import ExecutionResult, ExecutionStatus
-            res = ExecutionResult(step_id=step.id, success=False, error=str(e))
-            state["execution_results"].append(res)
-            step.status = ExecutionStatus.FAILED
-            step.result_details = str(e)
-            return state
 
-    # Increment index if successful
+    step = plan.ordered_steps[idx]
+
+    # Skip validation if step already failed (e.g. in coding_agent)
+    if step.status == ExecutionStatus.FAILED:
+        return state
+
+    if step.commands:
+        shell_tool = ShellTool(session_id=state.get("session_id", "default"))
+        for cmd in step.commands:
+            try:
+                shell_result = await shell_tool.execute(cmd)
+            except PermissionDeniedError as exc:
+                # Shell permission pending — do not fail the step, just return.
+                # ShellTool already called request_permission() internally.
+                logger.info(f"Shell permission pending for command: {cmd}")
+                step.status = ExecutionStatus.WAITING_PERMISSION
+                step.result_details = f"Command permission pending: {cmd}"
+                return state
+            except Exception as exc:
+                logger.error(f"Validation command exception for step '{step.title}': {exc}")
+                res = ExecutionResult(
+                    step_id=step.id, success=False,
+                    error=str(exc), output=""
+                )
+                state["execution_results"].append(res)
+                step.status = ExecutionStatus.FAILED
+                step.result_details = str(exc)
+                return state
+
+            # Non-zero exit code = FAILED. Never fake a passing validation.
+            if not shell_result.get("success", False) or shell_result.get("exit_code", 0) != 0:
+                error_msg = (
+                    f"Command '{cmd}' exited with code {shell_result.get('exit_code', -1)}. "
+                    f"stderr: {shell_result.get('stderr', '')[:500]}"
+                )
+                logger.error(f"Validation FAILED for step '{step.title}': {error_msg}")
+                res = ExecutionResult(
+                    step_id=step.id, success=False,
+                    error=error_msg,
+                    output=shell_result.get("stdout", "")[:500],
+                )
+                state["execution_results"].append(res)
+                step.status = ExecutionStatus.FAILED
+                step.result_details = error_msg
+                return state
+
+            logger.info(f"Validation command succeeded: {cmd}")
+
+    # Increment index only on clean pass
     state["current_step_index"] += 1
     return state
 
@@ -108,7 +168,7 @@ def after_checkpoint(state: AppState) -> str:
 def has_more_steps(state: AppState) -> str:
     plan = state.get("execution_plan")
     idx = state.get("current_step_index", 0)
-    
+
     if plan and idx < len(plan.ordered_steps):
         # Stop graph execution if a step failed
         if idx > 0 and plan.ordered_steps[idx - 1].status == "failed":
@@ -148,7 +208,7 @@ class AgentSupervisor:
         self.active_session_id: str = str(uuid.uuid4())
         self.activity_logs: List[AgentActivityLog] = []
         self._ws_broadcast = None
-        
+
         # Internal state memory for the planning graph
         from ..models.schemas import RequirementSpec
         self.planning_state: AppState = {
@@ -201,7 +261,7 @@ class AgentSupervisor:
     async def invoke_planning_turn(self, user_message: str, language: str) -> Dict[str, Any]:
         """Runs the LangGraph planning workflow for one interaction turn."""
         from langchain_core.messages import HumanMessage
-        
+
         # Block if waiting for approval
         if self.planning_state.get("approval_status") == "WAITING_FOR_APPROVAL":
             return {
@@ -209,48 +269,48 @@ class AgentSupervisor:
                 "message": "Waiting for explicit user approval of the Project Blueprint.",
                 "state": self.get_session_state()
             }
-            
+
         self.planning_state["detected_language"] = language
         self.planning_state["messages"].append(HumanMessage(content=user_message))
-        
+
         # Run graph
         result_state = app_graph.invoke(self.planning_state)
         self.planning_state = result_state  # persist
-        
+
         response = {
             "status": "planning",
             "requirements_complete": result_state["requirements_complete"],
             "current_question": result_state.get("current_question"),
             "approval_status": result_state.get("approval_status"),
         }
-        
+
         if result_state.get("blueprint"):
             response["blueprint"] = result_state["blueprint"].model_dump(mode="json")
-            
+
         return response
 
     async def handle_blueprint_decision(self, decision: str, modifications: Optional[str] = None) -> Dict[str, Any]:
         """Handles APPROVE, REJECT, EDIT for the generated blueprint."""
         if self.planning_state.get("approval_status") != "WAITING_FOR_APPROVAL":
             raise ValueError("No blueprint is currently pending approval.")
-            
+
         if decision == "APPROVE":
             self.planning_state["approval_status"] = "APPROVED"
             if self.planning_state["blueprint"]:
                 self.planning_state["blueprint"].approved = True
                 contract_graph.build_sample_graph()  # Initialize Contract Graph
             await self.log_activity("Blueprint Approved", "Supervisor", "completed", "User approved blueprint.")
-            
+
             # Call execution_planner_node directly — avoids re-running the full graph from START.
             # The planning graph halts at END after blueprint_node; resuming via ainvoke() would
             # restart requirement gathering. Direct node dispatch is the correct MVP approach.
             logger.info("Blueprint Approved. Dispatching ExecutionPlannerAgent directly.")
             self.planning_state = execution_planner_node(self.planning_state)
-            
+
         elif decision == "REJECT":
             self.planning_state["approval_status"] = "REJECTED"
             await self.log_activity("Blueprint Rejected", "Supervisor", "completed", "User rejected blueprint.")
-            
+
         elif decision == "EDIT":
             from langchain_core.messages import HumanMessage
             self.planning_state["approval_status"] = "EDIT"
@@ -259,45 +319,106 @@ class AgentSupervisor:
             if modifications:
                 self.planning_state["messages"].append(HumanMessage(content=f"User requested edits: {modifications}"))
             await self.log_activity("Blueprint Edit Requested", "Supervisor", "completed", "User requested changes to requirements.")
-            
+
         else:
             raise ValueError(f"Invalid decision: {decision}")
-            
+
         return {"status": "success", "approval_status": self.planning_state["approval_status"]}
 
     async def handle_execution_decision(self, decision: str) -> Dict[str, Any]:
         """Handles APPROVE, REJECT, EDIT for the generated execution plan."""
         if self.planning_state.get("execution_approval_status") != "WAITING_FOR_EXECUTION_APPROVAL":
             raise ValueError("No execution plan is currently pending approval.")
-            
+
         if decision == "APPROVE":
             self.planning_state["execution_approval_status"] = "APPROVED"
             await self.log_activity("Execution Plan Approved", "Supervisor", "completed", "User approved execution plan.")
-            
-            # Execute the plan node-by-node directly.
-            # git_checkpoint_node → coding_agent_node → validation_node (loops via has_more_steps).
-            # We call these directly rather than re-invoking app_graph.ainvoke() from START,
-            # which would incorrectly restart requirement gathering.
-            logger.info("Execution Plan Approved. Running git checkpoint + coding + validation pipeline.")
+
+            # STEP 1: Git checkpoint — hard gate before any mutation.
+            # git_checkpoint_node sets execution_approval_status=FAILED on error.
+            logger.info("Running git checkpoint before any code mutation.")
             state = await git_checkpoint_node(self.planning_state)
-            
+
+            # If checkpoint failed, do not proceed with any execution.
+            if state.get("execution_approval_status") == "FAILED" or not state.get("git_checkpoint_id"):
+                self.planning_state = state
+                logger.error("Execution aborted: git checkpoint failed.")
+                await self.log_activity(
+                    "Execution Aborted", "Supervisor", "failed",
+                    "Git checkpoint creation failed. No files were modified."
+                )
+                return {
+                    "status": "failed",
+                    "reason": state.get("errors", ["Git checkpoint failed"])[-1],
+                    "execution_approval_status": state.get("execution_approval_status", "FAILED"),
+                    "checkpoint_id": None,
+                    "suggestion": "RETRY",
+                }
+
+            # STEP 2: Execute coding + validation loop step-by-step.
             plan = state.get("execution_plan")
             if plan:
-                for _ in range(len(plan.ordered_steps)):
+                for step_idx in range(len(plan.ordered_steps)):
+                    current_step = plan.ordered_steps[state.get("current_step_index", 0)]
+                    await self.log_activity(
+                        f"Executing Step {step_idx + 1}/{len(plan.ordered_steps)}: {current_step.title}",
+                        "CodingAgent", "running",
+                        f"Step ID: {current_step.id}, Risk: {current_step.risk_level}"
+                    )
+
                     state = await coding_agent_node(state)
                     state = await validation_node(state)
-                    # Stop early if a step failed
-                    idx = state.get("current_step_index", 0)
-                    if idx > 0 and plan.ordered_steps[idx - 1].status == "failed":
-                        logger.warning(f"Execution halted early at step index {idx} due to failure.")
+
+                    # Inspect result after this iteration
+                    completed_idx = state.get("current_step_index", 0)
+                    prev_step = plan.ordered_steps[completed_idx - 1] if completed_idx > 0 else current_step
+
+                    if prev_step.status.value in ("failed", "waiting_permission"):
+                        from ..models.schemas import FailureSuggestion
+                        suggestion = (
+                            FailureSuggestion.ROLLBACK
+                            if prev_step.risk_level in ("high", "critical")
+                            else FailureSuggestion.FIX
+                        )
+                        logger.warning(
+                            f"Execution halted at step '{prev_step.id}' (status: {prev_step.status.value})."
+                        )
+                        await self.log_activity(
+                            f"Step Failed: {prev_step.title}",
+                            "CodingAgent", "failed",
+                            f"Reason: {prev_step.result_details or 'unknown'}. "
+                            f"Suggestion: {suggestion.value}. Checkpoint: {state.get('git_checkpoint_id')}."
+                        )
+                        self.planning_state = state
+                        return {
+                            "status": "failed",
+                            "execution_approval_status": state.get("execution_approval_status"),
+                            "failure_report": {
+                                "failed_step_id": prev_step.id,
+                                "reason": prev_step.result_details or "Unknown failure",
+                                "checkpoint_id": state.get("git_checkpoint_id"),
+                                "suggestion": suggestion.value,
+                            }
+                        }
+
+                    # All steps consumed — exit the loop cleanly
+                    if completed_idx >= len(plan.ordered_steps):
                         break
-            
+
             self.planning_state = state
-            
+
+            # STEP 3: Post-execution — update Contract Graph + consistency check.
+            await self._update_contract_graph_after_execution(state)
+
+            await self.log_activity(
+                "Execution Complete", "Supervisor", "completed",
+                f"All steps completed. Checkpoint: {state.get('git_checkpoint_id')}."
+            )
+
         elif decision == "REJECT":
             self.planning_state["execution_approval_status"] = "REJECTED"
             await self.log_activity("Execution Plan Rejected", "Supervisor", "completed", "User rejected execution plan.")
-            
+
         elif decision == "EDIT":
             self.planning_state["execution_approval_status"] = "EDIT"
             self.planning_state["execution_plan"] = None
@@ -306,10 +427,10 @@ class AgentSupervisor:
             logger.info("Execution Plan edit requested. Re-dispatching ExecutionPlannerAgent.")
             self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
             self.planning_state = execution_planner_node(self.planning_state)
-            
+
         else:
             raise ValueError(f"Invalid decision: {decision}")
-            
+
         return {"status": "success", "execution_approval_status": self.planning_state["execution_approval_status"]}
 
     async def handle_change_request(self, change_description: str) -> Dict[str, Any]:
@@ -370,6 +491,117 @@ class AgentSupervisor:
             "decision": response.decision.value,
             "granted": granted,
         }
+
+    async def _update_contract_graph_after_execution(self, state: AppState) -> None:
+        """
+        Post-execution Contract Graph update and consistency check.
+
+        Uses existing ContractGraph APIs only:
+        - add_node()    -- upserts; marks touched file nodes as MODIFIED
+        - find_violations() -- surfaces cross-layer contract drifts
+        - get_node()    -- reads existing node before updating status
+
+        This does NOT rebuild the full semantic graph (which would require
+        parsing generated code). It marks the layers affected by the execution
+        plan as MODIFIED so the violation checker can surface inconsistencies.
+        """
+        plan = state.get("execution_plan")
+        if not plan:
+            return
+
+        # Collect all files touched by this execution run
+        touched_files: List[str] = []
+        for step in plan.ordered_steps:
+            touched_files.extend(step.files_to_modify)
+
+        # Derive affected layers from file paths heuristically
+        layer_map = {
+            "frontend": ContractNodeType.FRONTEND,
+            "src/components": ContractNodeType.FRONTEND,
+            "src/pages": ContractNodeType.FRONTEND,
+            "backend": ContractNodeType.BACKEND,
+            "app/models": ContractNodeType.BACKEND,
+            "app/services": ContractNodeType.BACKEND,
+            "api": ContractNodeType.API,
+            "app/api": ContractNodeType.API,
+            "routes": ContractNodeType.API,
+            "migrations": ContractNodeType.DATABASE,
+            "db": ContractNodeType.DATABASE,
+            "database": ContractNodeType.DATABASE,
+            "test": ContractNodeType.TEST,
+            "tests": ContractNodeType.TEST,
+        }
+
+        affected_layers_used: set = set()
+
+        for file_path in touched_files:
+            fp_lower = file_path.lower().replace("\\", "/")
+            node_type = ContractNodeType.BACKEND  # default
+            layer_name = "Backend"
+
+            for key, ntype in layer_map.items():
+                if key in fp_lower:
+                    node_type = ntype
+                    layer_name = key.split("/")[-1].capitalize()
+                    break
+
+            node_id = f"exec:{file_path}"
+            existing = contract_graph.get_node(node_id)
+
+            if existing:
+                # Update status only -- preserve all other node data
+                updated = existing.model_copy(
+                    update={"status": ContractNodeStatus.MODIFIED}
+                )
+                contract_graph.add_node(updated)
+            else:
+                # Register new node for this generated file
+                new_node = ContractNode(
+                    id=node_id,
+                    name=file_path,
+                    layer=layer_name,
+                    node_type=node_type,
+                    metadata={"file_path": file_path, "generated_by": "CodingAgent"},
+                    status=ContractNodeStatus.MODIFIED,
+                )
+                contract_graph.add_node(new_node)
+
+            affected_layers_used.add(layer_name)
+
+        # Run cross-layer consistency check using existing API
+        violations = contract_graph.find_violations()
+        if violations:
+            await self.log_activity(
+                "Contract Graph Consistency Check",
+                "ContractGraph",
+                "failed",
+                f"{len(violations)} consistency violation(s) found after execution: "
+                + "; ".join(v.description[:80] for v in violations[:3]),
+            )
+        else:
+            await self.log_activity(
+                "Contract Graph Consistency Check",
+                "ContractGraph",
+                "completed",
+                f"No violations detected. Affected layers: {sorted(affected_layers_used)}.",
+            )
+
+        # Surface the expected-layer consistency check for the demo scenario.
+        # After an execution touching a Student model, verify all 5 expected
+        # layers (Frontend, Backend, API, Database, Tests) have nodes in the graph.
+        if any("student" in f.lower() for f in touched_files):
+            expected_layers = {"Frontend", "Backend", "Api", "Database", "Test"}
+            present_layers = {node.layer for node in contract_graph.export_graph().nodes}
+            missing_layers = expected_layers - present_layers
+            if missing_layers:
+                await self.log_activity(
+                    "Cross-Layer Consistency Warning",
+                    "ContractGraph",
+                    "failed",
+                    f"Student change detected but these layers have no contract nodes: "
+                    f"{sorted(missing_layers)}. "
+                    "Update may be incomplete across the full stack.",
+                )
 
     def get_session_state(self) -> Dict[str, Any]:
         """Returns snapshot of current supervisor state, including execution plan progress."""
