@@ -3,7 +3,7 @@ import httpx
 from httpx import Response
 from unittest.mock import patch, AsyncMock
 from app.agents.base import LocalLLMClient
-from app.agents.supervisor import chat_graph
+from app.agents.supervisor import app_graph as planning_graph
 
 @pytest.mark.asyncio
 async def test_ollama_offline_raises_error():
@@ -21,8 +21,9 @@ async def test_ollama_offline_raises_error():
 def test_langgraph_supervisor_compiles():
     """Test that the LangGraph state graph compiles correctly."""
     # Should not raise any Graph compilation errors
-    assert chat_graph is not None
+    assert planning_graph is not None
     
     # We can inspect the graph to ensure nodes exist
-    nodes = chat_graph.nodes
-    assert "agent" in nodes
+    nodes = planning_graph.nodes
+    assert "requirement_node" in nodes
+    assert "blueprint_node" in nodes

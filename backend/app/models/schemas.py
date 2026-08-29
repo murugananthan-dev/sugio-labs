@@ -1,7 +1,9 @@
 from enum import Enum
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Annotated
 from datetime import datetime
 from pydantic import BaseModel, Field
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
 
 # ============================================================================
 # 1. PERMISSION SYSTEM SCHEMAS
@@ -107,6 +109,64 @@ class RequirementSpec(BaseModel):
     testing_stack: str = Field(default="Pytest + Vitest")
     ui_preferences: str = Field(default="Dark Modern Glassmorphic")
     extra_requirements: Optional[str] = Field(default=None)
+    
+class PartialRequirementExtraction(BaseModel):
+    """Used for structured output from the LLM during the interview phase."""
+    extracted_spec: RequirementSpec = Field(..., description="The current known project requirements.")
+    missing_fields: List[str] = Field(default_factory=list, description="Fields that still need user clarification.")
+    is_complete: bool = Field(default=False, description="True if enough info exists to generate a comprehensive blueprint.")
+    next_question: str = Field(default="", description="The exact question to ask the user next, based on missing fields.")
+
+class ExecutionStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WAITING_PERMISSION = "waiting_permission"
+
+class ExecutionStep(BaseModel):
+    id: str = Field(..., description="Step identifier, e.g., 'setup_db'")
+    title: str = Field(..., description="Short title of the step")
+    description: str = Field(..., description="Detailed explanation of what this step accomplishes")
+    files_to_read: List[str] = Field(default_factory=list, description="Paths of files to inspect before modification")
+    files_to_modify: List[str] = Field(default_factory=list, description="Paths of files to create, update, or delete")
+    commands: List[str] = Field(default_factory=list, description="Shell commands required for this step")
+    dependencies: List[str] = Field(default_factory=list, description="IDs of steps that must complete before this one")
+    risk_level: str = Field(default="low", description="low, medium, high")
+    requires_permission: bool = Field(default=True, description="Whether this step requires user permission to execute")
+    status: ExecutionStatus = Field(default=ExecutionStatus.PENDING)
+    result_details: Optional[str] = Field(default=None, description="Output or error details from execution")
+
+class ExecutionPlan(BaseModel):
+    blueprint_context: str = Field(..., description="Summary of the blueprint driving this plan")
+    ordered_steps: List[ExecutionStep] = Field(default_factory=list, description="Sequential steps to execute")
+    overall_risk: str = Field(default="medium", description="Overall risk of the execution plan")
+    estimated_affected_files: int = Field(default=0, description="Number of files expected to change")
+    validation_strategy: str = Field(..., description="How the execution will be validated (e.g., specific pytest commands)")
+
+class ExecutionResult(BaseModel):
+    step_id: str
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+class AppState(TypedDict):
+    """LangGraph state for the full workflow (Planning & Execution)."""
+    session_id: str
+    messages: Annotated[List[Any], add_messages]
+    detected_language: str
+    requirements: RequirementSpec
+    requirements_complete: bool
+    current_question: Optional[str]
+    blueprint: Optional['ProjectBlueprint']
+    approval_status: str  # WAITING_FOR_APPROVAL, APPROVED, REJECTED, EDIT
+    
+    execution_plan: Optional[ExecutionPlan]
+    execution_approval_status: str  # NONE, WAITING_FOR_EXECUTION_APPROVAL, APPROVED, REJECTED, EDIT
+    current_step_index: int
+    execution_results: List[ExecutionResult]
+    git_checkpoint_id: Optional[str]  # renamed from checkpoint_id to avoid LangGraph reserved channel conflict
+    errors: List[str]
 
 class ProjectBlueprint(BaseModel):
     project_name: str
