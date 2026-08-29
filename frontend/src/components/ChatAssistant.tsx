@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Send, Sparkles, Bot, User, Globe, MessageSquare } from 'lucide-react';
+import { Send, Sparkles, Bot, User, Globe, MessageSquare, PlayCircle, RefreshCw } from 'lucide-react';
+import { VoiceInput } from './VoiceInput';
 import { sendChatMessage } from '../services/api';
 
 interface ChatAssistantProps {
@@ -200,6 +201,7 @@ export const ChatAssistant: React.FC<ChatAssistantProps> = ({
             placeholder={`Ask Sugio Labs in ${language === 'ta' ? 'Tamil' : language === 'tanglish' ? 'Tanglish' : 'English'}...`}
             className="flex-1 p-2.5 rounded-xl bg-slate-950 border border-white/10 text-xs text-white focus:outline-none focus:border-indigo-500"
           />
+          <VoiceInput onResult={(text) => handleSend(text)} language={language} />
           <button
             type="submit"
             disabled={!input.trim() || loading}

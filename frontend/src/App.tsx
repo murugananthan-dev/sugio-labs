@@ -10,6 +10,8 @@ import { ChatAssistant } from './components/ChatAssistant';
 import { ActivityTimeline } from './components/ActivityTimeline';
 import { PermissionModal } from './components/PermissionModal';
 import { WorkspaceSetup } from './components/WorkspaceSetup';
+import { FinalReportView } from './components/FinalReportView';
+import { SessionHistoryView } from './components/SessionHistoryView';
 import {
   HealthStatus,
   HardwareProfile,
@@ -23,6 +25,7 @@ import {
   ExecutionResult,
   ExecutionApprovalStatus,
   ProjectWorkspace,
+  FinalExecutionReport,
 } from './types';
 import {
   fetchHealth,
@@ -117,6 +120,9 @@ export const App: React.FC = () => {
   // ── Workspace State ──────────────────────────────────────────────────────
   const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
 
+  const [showHistory, setShowHistory] = useState<boolean>(false);
+  const [finalReport, setFinalReport] = useState<FinalExecutionReport | null>(null);
+
   // ── Impact Analysis State ──────────────────────────────────────────────
 
   const [impactReport, setImpactReport] = useState<ImpactReport | null>(null);
@@ -159,6 +165,11 @@ export const App: React.FC = () => {
           category: 'general',
           options: [],
         });
+      } else if (type === 'execution_completed' && payload?.report) {
+        setFinalReport(payload.report);
+      } else if (type === 'execution_failed' && payload?.report) {
+        if (payload.final_report) setFinalReport(payload.final_report);
+        else setFinalReport(payload.report);
       }
     },
     [appendActivityLog, setPendingPermission, speakAnnouncement, questionNumber]
@@ -199,6 +210,9 @@ export const App: React.FC = () => {
         }
         if (session.workspace) {
           setWorkspace(session.workspace);
+        }
+        if (session.final_report) {
+          setFinalReport(session.final_report);
         }
       } catch {
         // No active session — that's fine, user will start fresh
@@ -499,8 +513,24 @@ export const App: React.FC = () => {
         setActiveTab={setActiveTab}
         executionPlanReady={executionPlanReady}
       />
+      <div className="flex justify-end px-6 pt-4 max-w-7xl mx-auto w-full">
+        <button onClick={() => setShowHistory(true)} className="text-xs px-3 py-1.5 rounded-lg border border-white/10 bg-slate-800 text-white hover:bg-slate-700 transition-colors">
+          View History
+        </button>
+      </div>
 
-      {/* Main Workspace */}
+      {showHistory ? (
+        <div className="flex-1 w-full max-w-7xl mx-auto px-6 py-8">
+          <SessionHistoryView onClose={() => setShowHistory(false)} />
+        </div>
+      ) : finalReport ? (
+        <div className="flex-1 w-full max-w-7xl mx-auto px-6 py-8">
+          <FinalReportView
+            report={finalReport}
+            onClose={() => setFinalReport(null)}
+          />
+        </div>
+      ) : (
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
 
         {/* Main Content Area (3 cols on desktop) */}
@@ -514,6 +544,7 @@ export const App: React.FC = () => {
               loading={wizardLoading}
               onAnswer={handleWizardAnswer}
               onRestart={handleStartWizard}
+              language={language}
             />
           )}
 
@@ -654,6 +685,7 @@ export const App: React.FC = () => {
           </div>
         </div>
       </main>
+      )}
 
       {/* Permission Approval Modal Overlay */}
       {pendingPermission && (
