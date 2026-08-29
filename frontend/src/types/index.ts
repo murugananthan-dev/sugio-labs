@@ -263,6 +263,45 @@ export interface MCPToolDefinition {
 // SESSION STATE — mirrors get_session_state() on the backend
 // ============================================================================
 
+export interface ExecutionFailureReport {
+  failed_step_id: string;
+  reason: string;
+  checkpoint_id?: string;
+  suggestion: 'FIX' | 'RETRY' | 'ROLLBACK';
+  validation_output?: string;
+  validation_stderr?: string;
+}
+
+export interface FinalExecutionReport {
+  project_name: string;
+  workspace_path: string;
+  requirement_summary: string;
+  blueprint_summary: string;
+  status: string;
+  created_files: string[];
+  modified_files: string[];
+  execution_steps: { id: string; title: string; status: string }[];
+  validation_commands: string[];
+  validation_results: string;
+  consistency_result: string;
+  checkpoint_id?: string;
+  failure_details?: string;
+  recovery_action?: string;
+  started_at: string;
+  completed_at: string;
+  total_duration_seconds: number;
+}
+
+export interface SessionSummary {
+  session_id: string;
+  project_name: string;
+  workspace_path?: string;
+  timestamp: string;
+  status: string;
+  requirement_summary?: string;
+  checkpoint_id?: string;
+}
+
 export interface SessionState {
   session_id: string;
   requirements_complete: boolean;
@@ -282,6 +321,7 @@ export interface SessionState {
   activity_logs?: AgentActivityLog[];
   checkpoints?: GitCheckpoint[];
   workspace?: ProjectWorkspace;
+  final_report?: FinalExecutionReport;
 }
 
 // ============================================================================

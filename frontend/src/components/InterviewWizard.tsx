@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Sparkles, ArrowRight, CheckCircle2, HelpCircle, RefreshCw } from 'lucide-react';
 import { RequirementQuestion } from '../types';
+import { VoiceInput } from './VoiceInput';
 
 interface InterviewWizardProps {
   question: RequirementQuestion | null;
@@ -9,6 +10,7 @@ interface InterviewWizardProps {
   loading: boolean;
   onAnswer: (questionId: string, answer: string) => void;
   onRestart: () => void;
+  language: string;
 }
 
 export const InterviewWizard: React.FC<InterviewWizardProps> = ({
@@ -18,6 +20,7 @@ export const InterviewWizard: React.FC<InterviewWizardProps> = ({
   loading,
   onAnswer,
   onRestart,
+  language,
 }) => {
   const [selectedOption, setSelectedOption] = useState<string>('');
   const [customAnswer, setCustomAnswer] = useState<string>('');
@@ -165,14 +168,17 @@ export const InterviewWizard: React.FC<InterviewWizardProps> = ({
             </div>
 
             {isCustom && (
-              <textarea
-                value={customAnswer}
-                onChange={(e) => setCustomAnswer(e.target.value)}
-                placeholder="Type your specific requirement or custom stack configuration..."
-                rows={2}
-                className="w-full mt-2 p-2.5 rounded-lg bg-slate-950 border border-white/10 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                autoFocus
-              />
+              <div className="flex items-center gap-2 mt-2">
+                <textarea
+                  value={customAnswer}
+                  onChange={(e) => setCustomAnswer(e.target.value)}
+                  placeholder="Type your specific requirement or custom stack configuration..."
+                  rows={2}
+                  className="flex-1 p-2.5 rounded-lg bg-slate-950 border border-white/10 text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  autoFocus
+                />
+                <VoiceInput onResult={(text) => setCustomAnswer(prev => prev + " " + text)} language={language} />
+              </div>
             )}
           </div>
 

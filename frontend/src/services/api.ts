@@ -13,6 +13,7 @@ import {
   ProjectWorkspace,
   ProjectScanResult,
   SessionState,
+  SessionSummary,
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/v1';
@@ -136,6 +137,10 @@ export async function submitExecutionDecision(
 
 export async function fetchSessionState(): Promise<SessionState> {
   return fetchWrapper<SessionState>(`${API_BASE}/session/state`);
+}
+
+export async function fetchSessionHistory(): Promise<SessionSummary[]> {
+  return fetchWrapper<SessionSummary[]>(`${API_BASE}/session/history`);
 }
 
 // ============================================================================

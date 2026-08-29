@@ -208,6 +208,36 @@ class ExecutionFailureReport(BaseModel):
     validation_output: Optional[str] = None
     validation_stderr: Optional[str] = None
 
+class FinalExecutionReport(BaseModel):
+    """Structured report generated at the end of the execution flow."""
+    project_name: str
+    workspace_path: str
+    requirement_summary: str
+    blueprint_summary: str
+    status: str = Field(..., description="COMPLETED or FAILED")
+    created_files: List[str] = Field(default_factory=list)
+    modified_files: List[str] = Field(default_factory=list)
+    execution_steps: List[Dict[str, Any]] = Field(default_factory=list)
+    validation_commands: List[str] = Field(default_factory=list)
+    validation_results: str = Field(default="")
+    consistency_result: str = Field(default="")
+    checkpoint_id: Optional[str] = None
+    failure_details: Optional[str] = None
+    recovery_action: Optional[str] = None
+    started_at: datetime
+    completed_at: datetime
+    total_duration_seconds: int = 0
+
+class SessionSummary(BaseModel):
+    """Lightweight summary of a session/project for local history."""
+    session_id: str
+    project_name: str
+    workspace_path: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    status: str = Field(default="pending")
+    requirement_summary: Optional[str] = None
+    checkpoint_id: Optional[str] = None
+
 class AppState(TypedDict):
     """LangGraph state for the full workflow (Planning & Execution)."""
     session_id: str

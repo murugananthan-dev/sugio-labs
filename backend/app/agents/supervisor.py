@@ -1,5 +1,7 @@
 import uuid
 import logging
+import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -23,6 +25,8 @@ from ..models.schemas import (
     AppState,
     ExecutionPlan,
     ExecutionResult,
+    FinalExecutionReport,
+    SessionSummary,
 )
 from .requirement_agent import requirement_agent
 from .blueprint_agent import blueprint_agent
@@ -35,6 +39,7 @@ from ..contract_graph.graph import contract_graph
 from ..permissions.manager import permission_manager
 
 logger = logging.getLogger("sugio_labs.agents.supervisor")
+HISTORY_FILE = Path(__file__).parent.parent.parent / "history.json"
 
 # Graph Nodes
 def requirement_node(state: AppState) -> AppState:
@@ -337,10 +342,10 @@ class AgentSupervisor:
             # STEP 1: Git checkpoint — hard gate before any mutation.
             # git_checkpoint_node sets execution_approval_status=FAILED on error.
             logger.info("Running git checkpoint before any code mutation.")
-            
+
             if self._ws_broadcast:
                 await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_STARTED, payload={}))
-                
+
             state = await git_checkpoint_node(self.planning_state)
 
             # If checkpoint failed, do not proceed with any execution.
@@ -369,15 +374,15 @@ class AgentSupervisor:
                         "CodingAgent", "running",
                         f"Step ID: {current_step.id}, Risk: {current_step.risk_level}"
                     )
-                    
+
                     if self._ws_broadcast:
                         await self._ws_broadcast(WSMessage(type=WSMessageType.STEP_STARTED, payload={"step_id": current_step.id}))
 
                     state = await coding_agent_node(state)
-                    
+
                     if self._ws_broadcast:
                         await self._ws_broadcast(WSMessage(type=WSMessageType.VALIDATION_STARTED, payload={"step_id": current_step.id}))
-                        
+
                     state = await validation_node(state)
 
                     # Inspect result after this iteration
@@ -394,21 +399,18 @@ class AgentSupervisor:
                         logger.warning(
                             f"Execution halted at step '{prev_step.id}' (status: {prev_step.status.value})."
                         )
-                        await self.log_activity(
-                            f"Step Failed: {prev_step.title}",
-                            "CodingAgent", "failed",
-                            f"Reason: {prev_step.result_details or 'unknown'}. "
-                            f"Suggestion: {suggestion.value}. Checkpoint: {state.get('git_checkpoint_id')}."
-                        )
                         self.planning_state = state
-                        
+
+                        self._save_session_history("FAILED")
+                        report = self._generate_final_report("FAILED")
                         if self._ws_broadcast:
                             await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_FAILED, payload={
                                 "step_id": prev_step.id,
                                 "reason": prev_step.result_details,
-                                "suggestion": suggestion.value
+                                "suggestion": suggestion.value,
+                                "report": report.model_dump(mode="json")
                             }))
-                            
+
                         return {
                             "status": "failed",
                             "execution_approval_status": state.get("execution_approval_status"),
@@ -419,7 +421,7 @@ class AgentSupervisor:
                                 "suggestion": suggestion.value,
                             }
                         }
-                    
+
                     if self._ws_broadcast:
                         await self._ws_broadcast(WSMessage(type=WSMessageType.STEP_COMPLETED, payload={"step_id": prev_step.id}))
 
@@ -432,13 +434,19 @@ class AgentSupervisor:
             # STEP 3: Post-execution — update Contract Graph + consistency check.
             await self._update_contract_graph_after_execution(state)
 
+            self._save_session_history("COMPLETED")
+            report = self._generate_final_report("COMPLETED")
+
             await self.log_activity(
                 "Execution Complete", "Supervisor", "completed",
                 f"All steps completed. Checkpoint: {state.get('git_checkpoint_id')}."
             )
-            
+
             if self._ws_broadcast:
-                await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_COMPLETED, payload={}))
+                await self._ws_broadcast(WSMessage(type=WSMessageType.EXECUTION_COMPLETED, payload={
+                    "checkpoint_id": self.planning_state.get("git_checkpoint_id"),
+                    "report": report.model_dump(mode="json")
+                }))
 
         elif decision == "REJECT":
             self.planning_state["execution_approval_status"] = "REJECTED"
@@ -452,7 +460,7 @@ class AgentSupervisor:
             logger.info("Execution Plan edit requested. Re-dispatching ExecutionPlannerAgent.")
             self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
             self.planning_state = execution_planner_node(self.planning_state)
-            
+
         elif decision == "FIX":
             from langchain_core.messages import HumanMessage
             if modifications:
@@ -460,7 +468,7 @@ class AgentSupervisor:
             self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
             self.planning_state = execution_planner_node(self.planning_state)
             await self.log_activity("Execution Fix Requested", "Supervisor", "completed", "User requested fix for failed step.")
-            
+
         elif decision == "RETRY":
             # Reset current step status
             from ..models.schemas import ExecutionStatus
@@ -473,7 +481,7 @@ class AgentSupervisor:
             self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
             await self.log_activity("Execution Retry Requested", "Supervisor", "completed", "User requested retry for failed step.")
             return await self.handle_execution_decision("APPROVE")
-            
+
         elif decision == "ROLLBACK":
             from ..tools.git_tools import GitTool
             from pathlib import Path
@@ -481,14 +489,14 @@ class AgentSupervisor:
             ws = self.planning_state.get("workspace")
             if not cp_id:
                 raise ValueError("No checkpoint available for rollback.")
-            
+
             project_root = Path(ws.root_path) if ws else None
             git_tool = GitTool(project_root=project_root, session_id=self.active_session_id)
-            
+
             try:
                 git_tool.rollback_to_checkpoint(cp_id)
                 self.planning_state["execution_approval_status"] = "WAITING_FOR_EXECUTION_APPROVAL"
-                
+
                 # Reset execution progress
                 self.planning_state["current_step_index"] = 0
                 self.planning_state["execution_results"] = []
@@ -498,7 +506,7 @@ class AgentSupervisor:
                     for step in plan.ordered_steps:
                         step.status = ExecutionStatus.PENDING
                         step.result_details = None
-                        
+
                 await self.log_activity("Rollback Successful", "Supervisor", "completed", f"Rolled back to {cp_id}")
             except Exception as e:
                 raise ValueError(f"Rollback failed: {e}")
@@ -678,6 +686,65 @@ class AgentSupervisor:
                     "Update may be incomplete across the full stack.",
                 )
 
+    def _generate_final_report(self, status: str) -> FinalExecutionReport:
+        workspace = self.planning_state.get("workspace")
+        blueprint = self.planning_state.get("blueprint")
+        plan = self.planning_state.get("execution_plan")
+
+        modified = []
+        validation = []
+        req_summary = ""
+        bp_summary = ""
+
+        if plan:
+            validation.append(plan.validation_strategy)
+            for step in plan.ordered_steps:
+                if step.status.value == "completed":
+                    modified.extend(step.files_to_modify)
+
+        if blueprint:
+            req_summary = blueprint.objective
+            bp_summary = blueprint.architecture_summary
+
+        report = FinalExecutionReport(
+            project_name=workspace.project_name if workspace else "Unknown",
+            workspace_path=workspace.root_path if workspace else "",
+            requirement_summary=req_summary,
+            blueprint_summary=bp_summary,
+            status=status,
+            modified_files=list(set(modified)),
+            validation_commands=validation,
+            started_at=datetime.utcnow(),
+            completed_at=datetime.utcnow(),
+        )
+        self.planning_state["final_report"] = report
+        return report
+
+    def _save_session_history(self, status: str):
+        workspace = self.planning_state.get("workspace")
+        history = []
+        if HISTORY_FILE.exists():
+            try:
+                with open(HISTORY_FILE, "r") as f:
+                    history = json.load(f)
+            except Exception:
+                history = []
+
+        summary = SessionSummary(
+            session_id=self.active_session_id,
+            project_name=workspace.project_name if workspace else "Unknown",
+            workspace_path=workspace.root_path if workspace else None,
+            status=status,
+            timestamp=datetime.utcnow(),
+        )
+        history.append(summary.model_dump(mode="json"))
+
+        try:
+            with open(HISTORY_FILE, "w") as f:
+                json.dump(history, f)
+        except Exception as e:
+            logger.error(f"Failed to save session history: {e}")
+
     def get_session_state(self) -> Dict[str, Any]:
         """Returns snapshot of current supervisor state, including execution plan progress."""
         plan: Optional[ExecutionPlan] = self.planning_state.get("execution_plan")
@@ -701,6 +768,7 @@ class AgentSupervisor:
             "pending_permissions": [p.model_dump(mode="json") for p in permission_manager.get_pending_requests().values()],
             "hardware": local_llm.get_hardware_profile(),
             "workspace": self.planning_state.get("workspace").model_dump(mode="json") if self.planning_state.get("workspace") else None,
+            "final_report": self.planning_state.get("final_report").model_dump(mode="json") if self.planning_state.get("final_report") else None,
         }
 
 

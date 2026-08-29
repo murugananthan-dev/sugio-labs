@@ -259,6 +259,23 @@ async def execute_mcp_tool(payload: MCPExecutePayload):
 # ============================================================================
 # 7. SUPERVISOR SESSION & CHAT
 # ============================================================================
+import json
+from pathlib import Path
+
+HISTORY_FILE = Path(__file__).parent.parent.parent / "history.json"
+
+@router.get("/session/history")
+async def get_session_history():
+    """Returns local history of previous sessions."""
+    try:
+        if HISTORY_FILE.exists():
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+            return sorted(history, key=lambda x: x.get("timestamp", ""), reverse=True)
+        return []
+    except Exception as e:
+        logger.error(f"Failed to read history: {e}")
+        return []
 
 @router.get("/session/state")
 async def get_session_state():
