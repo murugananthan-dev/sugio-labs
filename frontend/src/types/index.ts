@@ -1,4 +1,35 @@
 // ============================================================================
+// WORKSPACE
+// ============================================================================
+
+export type WorkspaceMode = 'CREATE_NEW' | 'IMPORT_EXISTING';
+
+export interface ProjectWorkspace {
+  project_id: string;
+  project_name: string;
+  root_path: string;
+  mode: WorkspaceMode;
+  detected_stack: Record<string, string>;
+  git_enabled: boolean;
+  status: string;
+}
+
+export interface ProjectScanResult {
+  project_name: string;
+  root_path: string;
+  detected_languages: string[];
+  detected_frameworks: string[];
+  frontend_detected: boolean;
+  backend_detected: boolean;
+  database_hints: string[];
+  test_framework_hints: string[];
+  git_status: string;
+  important_files: string[];
+  ignored_directories: string[];
+  warnings: string[];
+}
+
+// ============================================================================
 // PERMISSION SYSTEM
 // ============================================================================
 
@@ -178,7 +209,8 @@ export type ExecutionApprovalStatus =
   | 'WAITING_FOR_EXECUTION_APPROVAL'
   | 'APPROVED'
   | 'REJECTED'
-  | 'EDIT';
+  | 'EDIT'
+  | 'FAILED';
 
 // ============================================================================
 // ACTIVITY LOG
@@ -249,6 +281,7 @@ export interface SessionState {
   hardware: HardwareProfile;
   activity_logs?: AgentActivityLog[];
   checkpoints?: GitCheckpoint[];
+  workspace?: ProjectWorkspace;
 }
 
 // ============================================================================
@@ -276,7 +309,15 @@ export interface BlueprintDecisionResponse {
 // EXECUTION DECISION RESPONSE — returned by POST /execution/decision
 // ============================================================================
 
+export interface FailureReport {
+  failed_step_id: string;
+  reason: string;
+  checkpoint_id?: string;
+  suggestion: 'FIX' | 'RETRY' | 'ROLLBACK';
+}
+
 export interface ExecutionDecisionResponse {
   status: string;
   execution_approval_status: ExecutionApprovalStatus;
+  failure_report?: FailureReport;
 }

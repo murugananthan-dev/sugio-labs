@@ -186,7 +186,9 @@ class CodingAgent:
 
         step = plan.ordered_steps[idx]
         session_id = state.get("session_id", "default")
-        sandbox_root: Path = settings.absolute_workspace_root
+        
+        ws = state.get("workspace")
+        sandbox_root = Path(ws.root_path) if ws else settings.absolute_workspace_root
 
         logger.info(
             f"CodingAgent processing step {idx + 1}/{len(plan.ordered_steps)}: '{step.title}'"

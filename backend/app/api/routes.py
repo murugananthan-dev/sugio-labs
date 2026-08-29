@@ -12,6 +12,8 @@ from ..models.schemas import (
     ImpactReport,
     ProjectBlueprint,
     RequirementQuestion,
+    ProjectWorkspace,
+    WorkspaceMode,
 )
 from ..agents.supervisor import agent_supervisor
 from ..agents.base import local_llm
@@ -21,6 +23,7 @@ from ..permissions.manager import permission_manager
 from ..tools.git_tools import GitTool
 from ..tools.shell_tools import ShellTool
 from ..tools.mcp_client import mcp_gateway
+from ..workspace.manager import workspace_manager
 
 logger = logging.getLogger("sugio_labs.api.routes")
 router = APIRouter(prefix="/api/v1")
@@ -29,7 +32,44 @@ shell_tool = ShellTool()
 
 
 # ============================================================================
-# 1. HEALTH & SYSTEM PROFILE
+# 1. WORKSPACE SETUP
+# ============================================================================
+
+class WorkspaceImportPayload(BaseModel):
+    path: str = Field(..., description="Absolute path to import")
+    
+@router.post("/workspace/import")
+async def import_workspace(payload: WorkspaceImportPayload):
+    try:
+        res = await workspace_manager.import_project(payload.path, agent_supervisor.active_session_id)
+        # Store in session state
+        agent_supervisor.planning_state["workspace"] = ProjectWorkspace(
+            project_id=agent_supervisor.active_session_id,
+            project_name=res.project_name,
+            root_path=res.root_path,
+            mode=WorkspaceMode.IMPORT_EXISTING,
+            detected_stack={"frontend": res.frontend_detected, "backend": res.backend_detected},
+            git_enabled=res.git_status == "enabled",
+        )
+        return {"status": "success", "scan_result": res.model_dump(mode="json")}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+        
+class WorkspaceCreatePayload(BaseModel):
+    name: str = Field(..., description="Project name")
+    parent_path: str = Field(..., description="Parent directory path")
+
+@router.post("/workspace/create")
+async def create_workspace(payload: WorkspaceCreatePayload):
+    try:
+        ws = await workspace_manager.create_project(payload.name, payload.parent_path, agent_supervisor.active_session_id)
+        agent_supervisor.planning_state["workspace"] = ws
+        return {"status": "success", "workspace": ws.model_dump(mode="json")}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ============================================================================
+# 2. HEALTH & SYSTEM PROFILE
 # ============================================================================
 
 @router.get("/health")
@@ -87,13 +127,14 @@ async def handle_blueprint_decision(payload: BlueprintDecisionPayload):
         raise HTTPException(status_code=400, detail=str(e))
 
 class ExecutionDecisionPayload(BaseModel):
-    decision: str = Field(..., description="APPROVE, REJECT, EDIT")
+    decision: str = Field(..., description="APPROVE, REJECT, EDIT, FIX, RETRY, ROLLBACK")
+    modifications: Optional[str] = Field(default=None, description="Correction instructions for FIX")
 
 @router.post("/execution/decision")
 async def handle_execution_decision(payload: ExecutionDecisionPayload):
-    """Handles explicit user approval of the generated Execution Plan."""
+    """Handles user approval, fixes, retries, and rollbacks for the Execution Plan."""
     try:
-        res = await agent_supervisor.handle_execution_decision(payload.decision)
+        res = await agent_supervisor.handle_execution_decision(payload.decision, payload.modifications)
         return res
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

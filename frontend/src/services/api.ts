@@ -10,6 +10,8 @@ import {
   PlanningChatResponse,
   BlueprintDecisionResponse,
   ExecutionDecisionResponse,
+  ProjectWorkspace,
+  ProjectScanResult,
   SessionState,
 } from '../types';
 
@@ -111,14 +113,16 @@ export async function submitBlueprintDecision(
 // ============================================================================
 // 4. EXECUTION DECISION (POST /execution/decision)
 //
-// decision: "APPROVE" | "REJECT" | "EDIT"
+// decision: "APPROVE" | "REJECT" | "EDIT" | "FIX" | "RETRY" | "ROLLBACK"
 // ============================================================================
 
 export async function submitExecutionDecision(
-  decision: 'APPROVE' | 'REJECT' | 'EDIT'
+  decision: 'APPROVE' | 'REJECT' | 'EDIT' | 'FIX' | 'RETRY' | 'ROLLBACK',
+  modifications?: string
 ): Promise<ExecutionDecisionResponse> {
   return postJson<ExecutionDecisionResponse>(`${API_BASE}/execution/decision`, {
     decision,
+    modifications,
   });
 }
 
@@ -132,6 +136,18 @@ export async function submitExecutionDecision(
 
 export async function fetchSessionState(): Promise<SessionState> {
   return fetchWrapper<SessionState>(`${API_BASE}/session/state`);
+}
+
+// ============================================================================
+// 5.5 WORKSPACE IMPORT & CREATE
+// ============================================================================
+
+export async function importWorkspace(path: string): Promise<{ status: string; scan_result: ProjectScanResult }> {
+  return postJson(`${API_BASE}/workspace/import`, { path });
+}
+
+export async function createWorkspace(name: string, parentPath: string): Promise<{ status: string; workspace: ProjectWorkspace }> {
+  return postJson(`${API_BASE}/workspace/create`, { name, parent_path: parentPath });
 }
 
 // ============================================================================

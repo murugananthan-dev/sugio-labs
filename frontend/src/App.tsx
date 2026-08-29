@@ -9,6 +9,7 @@ import { GitSafetyView } from './components/GitSafetyView';
 import { ChatAssistant } from './components/ChatAssistant';
 import { ActivityTimeline } from './components/ActivityTimeline';
 import { PermissionModal } from './components/PermissionModal';
+import { WorkspaceSetup } from './components/WorkspaceSetup';
 import {
   HealthStatus,
   HardwareProfile,
@@ -21,6 +22,7 @@ import {
   ExecutionPlan,
   ExecutionResult,
   ExecutionApprovalStatus,
+  ProjectWorkspace,
 } from './types';
 import {
   fetchHealth,
@@ -112,6 +114,9 @@ export const App: React.FC = () => {
   const [graphData, setGraphData] = useState<ContractGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState<boolean>(false);
 
+  // ── Workspace State ──────────────────────────────────────────────────────
+  const [workspace, setWorkspace] = useState<ProjectWorkspace | null>(null);
+
   // ── Impact Analysis State ──────────────────────────────────────────────
 
   const [impactReport, setImpactReport] = useState<ImpactReport | null>(null);
@@ -191,6 +196,9 @@ export const App: React.FC = () => {
           setCurrentStepIndex(session.current_step_index ?? 0);
           setExecutionResults(session.execution_results ?? []);
           setCheckpointId(session.checkpoint_id ?? null);
+        }
+        if (session.workspace) {
+          setWorkspace(session.workspace);
         }
       } catch {
         // No active session — that's fine, user will start fresh
@@ -351,14 +359,23 @@ export const App: React.FC = () => {
   // EXECUTION DECISION — APPROVE / EDIT / REJECT
   // ─────────────────────────────────────────────────────────────────────────
 
-  const handleExecutionApprove = async () => {
+  const handleExecutionDecision = async (
+    decision: 'APPROVE' | 'REJECT' | 'EDIT' | 'FIX' | 'RETRY' | 'ROLLBACK',
+    modifications?: string
+  ) => {
     setExecutionLoading(true);
     try {
-      const res = await submitExecutionDecision('APPROVE');
+      const res = await submitExecutionDecision(decision, modifications);
       setExecutionApprovalStatus(res.execution_approval_status);
-      speakAnnouncement('Execution approved. Agent is now coding.');
 
-      // Fetch updated results after execution completes
+      if (decision === 'APPROVE') speakAnnouncement('Execution approved. Agent is now coding.');
+      if (decision === 'REJECT') speakAnnouncement('Execution cancelled. No files were modified.');
+      if (decision === 'EDIT') speakAnnouncement('Revision requested. Regenerating execution plan.');
+      if (decision === 'FIX') speakAnnouncement('Fix requested. Regenerating failed step.');
+      if (decision === 'RETRY') speakAnnouncement('Retrying failed step.');
+      if (decision === 'ROLLBACK') speakAnnouncement('Rollback initiated.');
+
+      // Fetch updated results after decision completes
       try {
         const session = await fetchSessionState();
         setCurrentStepIndex(session.current_step_index ?? 0);
@@ -370,50 +387,13 @@ export const App: React.FC = () => {
         // Non-fatal — results will be stale but status is updated
       }
     } catch (err: any) {
-      showError(err.message ?? 'Execution approval failed.');
+      showError(err.message ?? `Execution decision '${decision}' failed.`);
     } finally {
       setExecutionLoading(false);
     }
   };
 
-  const handleExecutionReject = async () => {
-    setExecutionLoading(true);
-    try {
-      const res = await submitExecutionDecision('REJECT');
-      setExecutionApprovalStatus(res.execution_approval_status);
-      speakAnnouncement('Execution cancelled. No files were modified.');
-    } catch (err: any) {
-      showError(err.message ?? 'Execution rejection failed.');
-    } finally {
-      setExecutionLoading(false);
-    }
-  };
 
-  const handleExecutionEdit = async (_instructions: string) => {
-    setExecutionLoading(true);
-    try {
-      const res = await submitExecutionDecision('EDIT');
-      setExecutionApprovalStatus(res.execution_approval_status);
-      speakAnnouncement('Revision requested. Regenerating execution plan.');
-
-      // Fetch the regenerated plan
-      try {
-        const session = await fetchSessionState();
-        if (session.has_execution_plan && session.execution_plan) {
-          setExecutionPlan(session.execution_plan);
-          setExecutionApprovalStatus(session.execution_approval_status);
-          setCurrentStepIndex(0);
-          setExecutionResults([]);
-        }
-      } catch {
-        // Non-fatal
-      }
-    } catch (err: any) {
-      showError(err.message ?? 'Execution edit request failed.');
-    } finally {
-      setExecutionLoading(false);
-    }
-  };
 
   // ─────────────────────────────────────────────────────────────────────────
   // CONTRACT GRAPH
@@ -496,6 +476,17 @@ export const App: React.FC = () => {
       {/* Floating error banner */}
       {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
 
+      {/* Workspace Setup Modal */}
+      {!workspace && (
+        <WorkspaceSetup
+          onWorkspaceReady={(ws) => {
+            setWorkspace(ws);
+            speakAnnouncement(`Workspace ${ws.project_name} ready.`);
+          }}
+          onError={showError}
+        />
+      )}
+
       {/* Top Header & Navigation */}
       <Header
         health={health}
@@ -543,9 +534,7 @@ export const App: React.FC = () => {
               executionResults={executionResults}
               loading={executionLoading}
               checkpointId={checkpointId}
-              onApprove={handleExecutionApprove}
-              onReject={handleExecutionReject}
-              onEdit={handleExecutionEdit}
+              onDecision={handleExecutionDecision}
             />
           )}
 
@@ -642,6 +631,13 @@ export const App: React.FC = () => {
                 )}
               </div>
             )}
+
+            <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-400">
+              <span>Workspace</span>
+              <span className="text-emerald-400 font-bold max-w-[120px] truncate" title={workspace?.root_path}>
+                {workspace ? workspace.project_name : 'None'}
+              </span>
+            </div>
 
             <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-400">
               <span>Local-First Execution</span>
