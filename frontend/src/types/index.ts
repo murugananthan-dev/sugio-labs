@@ -1,3 +1,7 @@
+// ============================================================================
+// PERMISSION SYSTEM
+// ============================================================================
+
 export type PermissionAction =
   | 'read_file'
   | 'write_file'
@@ -25,6 +29,10 @@ export interface PermissionResponse {
   decision: PermissionDecision;
   reason?: string;
 }
+
+// ============================================================================
+// CONTRACT GRAPH
+// ============================================================================
 
 export type ContractNodeType =
   | 'requirement'
@@ -70,6 +78,10 @@ export interface ContractViolation {
   description: string;
 }
 
+// ============================================================================
+// IMPACT ANALYSIS
+// ============================================================================
+
 export interface ImpactReport {
   summary: string;
   affected_frontend: string[];
@@ -82,6 +94,10 @@ export interface ImpactReport {
   explanations: string[];
 }
 
+// ============================================================================
+// REQUIREMENT INTERVIEW
+// ============================================================================
+
 export interface RequirementQuestion {
   id: string;
   question: string;
@@ -91,6 +107,10 @@ export interface RequirementQuestion {
   recommendation_reason?: string;
   current_answer?: string;
 }
+
+// ============================================================================
+// BLUEPRINT
+// ============================================================================
 
 export interface ProjectBlueprint {
   project_name: string;
@@ -112,6 +132,58 @@ export interface ProjectBlueprint {
   approved: boolean;
 }
 
+// ============================================================================
+// EXECUTION PLAN — matches backend schemas.py exactly
+// ============================================================================
+
+export type ExecutionStatus =
+  | 'pending'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'waiting_permission';
+
+export interface ExecutionStep {
+  id: string;
+  title: string;
+  description: string;
+  files_to_read: string[];
+  files_to_modify: string[];
+  commands: string[];
+  dependencies: string[];
+  risk_level: string;
+  requires_permission: boolean;
+  status: ExecutionStatus;
+  result_details?: string | null;
+}
+
+export interface ExecutionPlan {
+  blueprint_context: string;
+  ordered_steps: ExecutionStep[];
+  overall_risk: string;
+  estimated_affected_files: number;
+  validation_strategy: string;
+}
+
+export interface ExecutionResult {
+  step_id: string;
+  success: boolean;
+  output?: string | null;
+  error?: string | null;
+}
+
+// Execution approval status values returned by the backend
+export type ExecutionApprovalStatus =
+  | 'NONE'
+  | 'WAITING_FOR_EXECUTION_APPROVAL'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'EDIT';
+
+// ============================================================================
+// ACTIVITY LOG
+// ============================================================================
+
 export interface AgentActivityLog {
   id: string;
   step: string;
@@ -120,6 +192,10 @@ export interface AgentActivityLog {
   details: string;
   timestamp: string;
 }
+
+// ============================================================================
+// SYSTEM
+// ============================================================================
 
 export interface HardwareProfile {
   ram_gb: number;
@@ -149,4 +225,58 @@ export interface MCPToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, any>;
+}
+
+// ============================================================================
+// SESSION STATE — mirrors get_session_state() on the backend
+// ============================================================================
+
+export interface SessionState {
+  session_id: string;
+  requirements_complete: boolean;
+  current_question: string | null;
+  has_blueprint: boolean;
+  blueprint: ProjectBlueprint | null;
+  approval_status: string;
+  has_execution_plan: boolean;
+  execution_plan: ExecutionPlan | null;
+  execution_approval_status: ExecutionApprovalStatus;
+  current_step_index: number;
+  execution_results: ExecutionResult[];
+  checkpoint_id: string | null;
+  graph: ContractGraphData;
+  pending_permissions: PermissionRequest[];
+  hardware: HardwareProfile;
+  activity_logs?: AgentActivityLog[];
+  checkpoints?: GitCheckpoint[];
+}
+
+// ============================================================================
+// PLANNING CHAT RESPONSE — returned by POST /chat/planning
+// ============================================================================
+
+export interface PlanningChatResponse {
+  status: 'planning' | 'blocked' | 'error';
+  requirements_complete: boolean;
+  current_question: string | null;
+  approval_status: string;
+  blueprint?: ProjectBlueprint;
+}
+
+// ============================================================================
+// BLUEPRINT DECISION RESPONSE — returned by POST /blueprint/decision
+// ============================================================================
+
+export interface BlueprintDecisionResponse {
+  status: string;
+  approval_status: string;
+}
+
+// ============================================================================
+// EXECUTION DECISION RESPONSE — returned by POST /execution/decision
+// ============================================================================
+
+export interface ExecutionDecisionResponse {
+  status: string;
+  execution_approval_status: ExecutionApprovalStatus;
 }

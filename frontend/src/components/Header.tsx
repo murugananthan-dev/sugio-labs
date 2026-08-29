@@ -11,6 +11,7 @@ interface HeaderProps {
   setVoiceEnabled: (enabled: boolean) => void;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  executionPlanReady?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -22,6 +23,7 @@ export const Header: React.FC<HeaderProps> = ({
   setVoiceEnabled,
   activeTab,
   setActiveTab,
+  executionPlanReady = false,
 }) => {
   return (
     <header className="w-full border-b border-white/10 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-40 px-6 py-4">
@@ -47,6 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
           {[
             { id: 'interview', label: 'Requirement Wizard' },
             { id: 'blueprint', label: 'Architecture Blueprint' },
+            { id: 'execution', label: 'Execution Plan' },
             { id: 'graph', label: 'Contract Graph' },
             { id: 'impact', label: 'Impact Analyzer' },
             { id: 'checkpoints', label: 'Git Safety & Checkpoints' },
@@ -55,13 +58,16 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-all relative ${
                 activeTab === tab.id
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-semibold'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
               }`}
             >
               {tab.label}
+              {tab.id === 'execution' && executionPlanReady && activeTab !== 'execution' && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+              )}
             </button>
           ))}
         </nav>

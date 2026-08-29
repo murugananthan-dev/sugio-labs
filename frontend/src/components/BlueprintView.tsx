@@ -4,23 +4,28 @@ import {
   Database,
   Network,
   Layers,
+  Edit3,
+  XCircle,
+  Loader2,
 } from 'lucide-react';
 import { ProjectBlueprint } from '../types';
 
 interface BlueprintViewProps {
   blueprint: ProjectBlueprint | null;
-  onApprove: () => void;
-  approving: boolean;
+  onDecision: (decision: 'APPROVE' | 'REJECT' | 'EDIT', modifications?: string) => void;
+  deciding: boolean;
   onViewGraph: () => void;
 }
 
 export const BlueprintView: React.FC<BlueprintViewProps> = ({
   blueprint,
-  onApprove,
-  approving,
+  onDecision,
+  deciding,
   onViewGraph,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'overview' | 'api' | 'db' | 'modules' | 'steps'>('overview');
+  const [editMode, setEditMode] = useState(false);
+  const [editInstructions, setEditInstructions] = useState('');
 
   if (!blueprint) {
     return (
@@ -55,21 +60,74 @@ export const BlueprintView: React.FC<BlueprintViewProps> = ({
 
         <div>
           {!blueprint.approved ? (
-            <button
-              onClick={onApprove}
-              disabled={approving}
-              className="btn-emerald text-sm"
-            >
-              <CheckCircle className="w-4 h-4" />
-              <span>{approving ? 'Constructing Graph...' : 'Approve Blueprint'}</span>
-            </button>
+            <div className="flex flex-col gap-3">
+              {!editMode ? (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => onDecision('APPROVE')}
+                    disabled={deciding}
+                    className="btn-emerald text-sm"
+                    id="blueprint-approve-btn"
+                  >
+                    {deciding ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                    <span>{deciding ? 'Processing…' : 'Approve Blueprint'}</span>
+                  </button>
+                  <button
+                    onClick={() => setEditMode(true)}
+                    disabled={deciding}
+                    className="btn-secondary text-sm"
+                    id="blueprint-edit-btn"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                    <span>Request Changes</span>
+                  </button>
+                  <button
+                    onClick={() => onDecision('REJECT')}
+                    disabled={deciding}
+                    className="btn-danger text-sm"
+                    id="blueprint-reject-btn"
+                  >
+                    <XCircle className="w-4 h-4" />
+                    <span>Reject</span>
+                  </button>
+                </div>
+              ) : (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (editInstructions.trim()) {
+                      onDecision('EDIT', editInstructions.trim());
+                      setEditMode(false);
+                      setEditInstructions('');
+                    }
+                  }}
+                  className="space-y-2"
+                >
+                  <textarea
+                    value={editInstructions}
+                    onChange={(e) => setEditInstructions(e.target.value)}
+                    placeholder="Describe the changes you want to the blueprint (e.g. 'Add React Native mobile app layer', 'Remove Redis caching', 'Use MySQL instead of PostgreSQL')…"
+                    rows={3}
+                    className="w-full p-2.5 rounded-xl bg-slate-950 border border-white/10 text-sm text-slate-100 focus:outline-none focus:border-indigo-500 resize-none"
+                    autoFocus
+                  />
+                  <div className="flex gap-2">
+                    <button type="submit" disabled={!editInstructions.trim() || deciding} className="btn-primary text-sm">
+                      <Edit3 className="w-4 h-4" />
+                      <span>Submit Changes</span>
+                    </button>
+                    <button type="button" onClick={() => setEditMode(false)} className="btn-secondary text-sm">Cancel</button>
+                  </div>
+                </form>
+              )}
+            </div>
           ) : (
             <button
               onClick={onViewGraph}
               className="btn-primary text-sm"
             >
               <Network className="w-4 h-4" />
-              <span>Inspect Contract Graph</span>
+              <span>View Execution Plan</span>
             </button>
           )}
         </div>
