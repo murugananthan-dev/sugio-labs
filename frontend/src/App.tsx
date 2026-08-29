@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { InterviewWizard } from './components/InterviewWizard';
 import { BlueprintView } from './components/BlueprintView';
+import { ExecutionPlanView } from './components/ExecutionPlanView';
 import { GraphView } from './components/GraphView';
 import { ImpactModal } from './components/ImpactModal';
 import { GitSafetyView } from './components/GitSafetyView';
@@ -17,26 +18,61 @@ import {
   ImpactReport,
   PermissionRequest,
   PermissionResponse,
-  AgentActivityLog,
+  ExecutionPlan,
+  ExecutionResult,
+  ExecutionApprovalStatus,
 } from './types';
 import {
   fetchHealth,
   fetchHardware,
-  startInterview,
-  submitAnswer,
-  approveBlueprint,
+  startPlanning,
+  submitPlanningMessage,
+  submitBlueprintDecision,
+  submitExecutionDecision,
   fetchContractGraph,
   resetSampleGraph,
   submitImpactAnalysis,
   fetchPendingPermissions,
   submitPermissionDecision,
+  fetchSessionState,
 } from './services/api';
 import { useGlobalState } from './context/GlobalContext';
 import { useWebSocket } from './services/useWebSocket';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ERROR BANNER — shown for recoverable API errors, auto-dismisses after 6s
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ErrorBanner: React.FC<{ message: string; onDismiss: () => void }> = ({
+  message,
+  onDismiss,
+}) => (
+  <div
+    role="alert"
+    className="fixed top-4 right-4 z-50 max-w-md glass-panel border border-rose-500/30 bg-rose-950/40 p-4 flex items-start gap-3"
+  >
+    <span className="text-rose-400 text-lg leading-none">⚠</span>
+    <div className="flex-1">
+      <p className="text-sm font-semibold text-rose-300">Error</p>
+      <p className="text-xs text-rose-200 mt-0.5 leading-relaxed">{message}</p>
+    </div>
+    <button
+      onClick={onDismiss}
+      className="text-slate-400 hover:text-white text-lg leading-none"
+    >
+      ×
+    </button>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// APP
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('interview');
   const [language, setLanguage] = useState<string>('en');
+  const [error, setError] = useState<string | null>(null);
 
   const {
     health, setHealth,
@@ -44,127 +80,352 @@ export const App: React.FC = () => {
     pendingPermission, setPendingPermission,
     activityLogs, appendActivityLog,
     voiceEnabled, setVoiceEnabled,
-    speakAnnouncement
+    speakAnnouncement,
   } = useGlobalState();
 
-  // Wizard State
+  // ── Interview Wizard State ──────────────────────────────────────────────
+
+  /** The backend's current_question is a raw string from the LLM.
+   *  We adapt it into the RequirementQuestion shape the wizard expects. */
   const [currentQuestion, setCurrentQuestion] = useState<RequirementQuestion | null>(null);
   const [questionNumber, setQuestionNumber] = useState<number>(1);
-  const totalQuestions = 7;
+  const totalQuestions = 7; // estimate; wizard shows progress up to this
   const [wizardLoading, setWizardLoading] = useState<boolean>(false);
+  const [wizardStarted, setWizardStarted] = useState<boolean>(false);
 
-  // Blueprint & Graph State
+  // ── Blueprint State ────────────────────────────────────────────────────
+
   const [blueprint, setBlueprint] = useState<ProjectBlueprint | null>(null);
-  const [approvingBlueprint, setApprovingBlueprint] = useState<boolean>(false);
+  const [blueprintDeciding, setBlueprintDeciding] = useState<boolean>(false);
+
+  // ── Execution Plan State ───────────────────────────────────────────────
+
+  const [executionPlan, setExecutionPlan] = useState<ExecutionPlan | null>(null);
+  const [executionApprovalStatus, setExecutionApprovalStatus] = useState<ExecutionApprovalStatus>('NONE');
+  const [currentStepIndex, setCurrentStepIndex] = useState<number>(0);
+  const [executionResults, setExecutionResults] = useState<ExecutionResult[]>([]);
+  const [executionLoading, setExecutionLoading] = useState<boolean>(false);
+  const [checkpointId, setCheckpointId] = useState<string | null>(null);
+
+  // ── Graph State ────────────────────────────────────────────────────────
+
   const [graphData, setGraphData] = useState<ContractGraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState<boolean>(false);
 
-  // Impact Analysis State
+  // ── Impact Analysis State ──────────────────────────────────────────────
+
   const [impactReport, setImpactReport] = useState<ImpactReport | null>(null);
   const [impactLoading, setImpactLoading] = useState<boolean>(false);
 
-  // Use WebSocket for realtime events
-  const handleWsMessage = useCallback((data: any) => {
-    if (data.type === 'activity_log' && data.payload) {
-      appendActivityLog(data.payload);
-    } else if (data.type === 'permission_required' && data.payload) {
-      setPendingPermission(data.payload);
-      speakAnnouncement(`Permission required for ${data.payload.action}`);
-    } else if (data.type === 'graph_update' && data.payload) {
-      setGraphData(data.payload);
-    }
-  }, [appendActivityLog, setPendingPermission, speakAnnouncement]);
+  // ─────────────────────────────────────────────────────────────────────────
+  // Error helpers
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const showError = useCallback((msg: string) => {
+    setError(msg);
+    // Auto-dismiss after 6 s
+    setTimeout(() => setError((prev) => (prev === msg ? null : prev)), 6000);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WebSocket – realtime push events
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleWsMessage = useCallback(
+    (data: any) => {
+      const { type, payload } = data;
+
+      if (type === 'activity_log' && payload) {
+        appendActivityLog(payload);
+      } else if (type === 'permission_required' && payload) {
+        setPendingPermission(payload);
+        speakAnnouncement(`Permission required for ${payload.action}`);
+      } else if (type === 'graph_update' && payload) {
+        setGraphData(payload);
+      } else if (type === 'blueprint_ready' && payload?.blueprint) {
+        setBlueprint(payload.blueprint);
+        speakAnnouncement('Project blueprint is ready for your review.');
+        setActiveTab('blueprint');
+      } else if (type === 'requirement_question' && payload) {
+        // Backend pushed next question over WS
+        setCurrentQuestion({
+          id: `q_${questionNumber}`,
+          question: typeof payload === 'string' ? payload : payload.question ?? String(payload),
+          category: 'general',
+          options: [],
+        });
+      }
+    },
+    [appendActivityLog, setPendingPermission, speakAnnouncement, questionNumber]
+  );
 
   const { isConnected } = useWebSocket(handleWsMessage);
 
-  // Initial Load
+  // ─────────────────────────────────────────────────────────────────────────
+  // Initial data load — health, hardware, graph, pending permissions
+  // ─────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
-    const initData = async () => {
+    const init = async () => {
+      const [h, hw, g, p] = await Promise.all([
+        fetchHealth().catch(() => null),
+        fetchHardware().catch(() => null),
+        fetchContractGraph().catch(() => null),
+        fetchPendingPermissions().catch(() => [] as PermissionRequest[]),
+      ]);
+
+      if (h) setHealth(h);
+      if (hw) setHardware(hw);
+      if (g) setGraphData(g);
+      if (p && p.length > 0) setPendingPermission(p[0]);
+
+      // Attempt session recovery — if server already has state (e.g. page refresh)
       try {
-        const [h, hw, g, p] = await Promise.all([
-          fetchHealth().catch(() => null),
-          fetchHardware().catch(() => null),
-          fetchContractGraph().catch(() => null),
-          fetchPendingPermissions().catch(() => []),
-        ]);
-
-        if (h) setHealth(h);
-        if (hw) setHardware(hw);
-        if (g) setGraphData(g);
-        if (p && p.length > 0) setPendingPermission(p[0]);
-
-        // Start wizard
-        const startRes = await startInterview().catch(() => null);
-        if (startRes?.question) {
-          setCurrentQuestion(startRes.question);
+        const session = await fetchSessionState();
+        if (session.has_blueprint && session.blueprint) {
+          setBlueprint(session.blueprint);
         }
-      } catch (err) {
-        console.error('Initialization error:', err);
+        if (session.has_execution_plan && session.execution_plan) {
+          setExecutionPlan(session.execution_plan);
+          setExecutionApprovalStatus(session.execution_approval_status);
+          setCurrentStepIndex(session.current_step_index ?? 0);
+          setExecutionResults(session.execution_results ?? []);
+          setCheckpointId(session.checkpoint_id ?? null);
+        }
+      } catch {
+        // No active session — that's fine, user will start fresh
       }
     };
 
-    initData();
-  }, [setHealth, setHardware, setGraphData, setPendingPermission]);
+    init();
+  }, [setHealth, setHardware, setPendingPermission]);
 
-  // Handle Wizard Answer
+  // ─────────────────────────────────────────────────────────────────────────
+  // Helper: convert backend current_question string → RequirementQuestion
+  // ─────────────────────────────────────────────────────────────────────────
+
+  function adaptQuestion(rawQuestion: string, qNum: number): RequirementQuestion {
+    return {
+      id: `q_${qNum}`,
+      question: rawQuestion,
+      category: 'requirement',
+      options: [],
+      recommended_option: undefined,
+      recommendation_reason: undefined,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // START INTERVIEW — user clicks "Start Requirement Wizard"
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleStartWizard = async () => {
+    setWizardLoading(true);
+    setWizardStarted(true);
+    setQuestionNumber(1);
+    setBlueprint(null);
+    setExecutionPlan(null);
+    setExecutionApprovalStatus('NONE');
+    setExecutionResults([]);
+    try {
+      const res = await startPlanning('Hello, I want to start a new project.', language);
+      if (res.current_question) {
+        setCurrentQuestion(adaptQuestion(res.current_question, 1));
+      } else if (res.requirements_complete && res.blueprint) {
+        // Immediate blueprint (unlikely but handle it)
+        setBlueprint(res.blueprint);
+        setActiveTab('blueprint');
+      }
+    } catch (err: any) {
+      showError(err.message ?? 'Failed to start the interview. Is the backend running?');
+      setWizardStarted(false);
+    } finally {
+      setWizardLoading(false);
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // SUBMIT ANSWER — user picks an option or writes a custom answer
+  // ─────────────────────────────────────────────────────────────────────────
+
   const handleWizardAnswer = async (questionId: string, answer: string) => {
     setWizardLoading(true);
     try {
-      const res = await submitAnswer(questionId, answer);
-      if (res.status === 'next_question' && res.question) {
-        setCurrentQuestion(res.question);
-        setQuestionNumber((prev) => prev + 1);
-      } else if (res.status === 'blueprint_ready' && res.blueprint) {
-        setBlueprint(res.blueprint);
-        setActiveTab('blueprint');
-        speakAnnouncement('Project blueprint ready for your review.');
+      const res = await submitPlanningMessage(answer, language);
+
+      if (res.status === 'blocked') {
+        // Waiting for approval — blueprint is ready, navigate there
+        if (blueprint) setActiveTab('blueprint');
+        return;
       }
-    } catch (err) {
-      console.error('Error submitting answer:', err);
+
+      if (res.requirements_complete && res.blueprint) {
+        // Blueprint generated
+        setBlueprint(res.blueprint);
+        setCurrentQuestion(null);
+        speakAnnouncement('Project blueprint ready for your review.');
+        setActiveTab('blueprint');
+      } else if (res.current_question) {
+        setCurrentQuestion(adaptQuestion(res.current_question, questionNumber + 1));
+        setQuestionNumber((prev) => prev + 1);
+      }
+    } catch (err: any) {
+      showError(err.message ?? 'Failed to submit answer.');
     } finally {
       setWizardLoading(false);
     }
   };
 
-  // Restart Wizard
-  const handleRestartWizard = async () => {
-    setWizardLoading(true);
+  // ─────────────────────────────────────────────────────────────────────────
+  // BLUEPRINT DECISION — APPROVE / EDIT / REJECT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleBlueprintDecision = async (
+    decision: 'APPROVE' | 'REJECT' | 'EDIT',
+    modifications?: string
+  ) => {
+    setBlueprintDeciding(true);
     try {
-      const res = await startInterview();
-      setCurrentQuestion(res.question);
-      setQuestionNumber(1);
-      setBlueprint(null);
-    } catch (err) {
-      console.error('Error restarting wizard:', err);
+      await submitBlueprintDecision(decision, modifications);
+
+      if (decision === 'APPROVE') {
+        // Mark blueprint as approved locally
+        if (blueprint) setBlueprint({ ...blueprint, approved: true });
+        speakAnnouncement('Blueprint approved. Generating execution plan.');
+
+        // The backend now generates the execution plan synchronously.
+        // Fetch updated session state to get it.
+        try {
+          const session = await fetchSessionState();
+          if (session.has_execution_plan && session.execution_plan) {
+            setExecutionPlan(session.execution_plan);
+            setExecutionApprovalStatus(session.execution_approval_status);
+            setCurrentStepIndex(0);
+            setExecutionResults([]);
+            speakAnnouncement('Execution plan ready. Please review before proceeding.');
+            setActiveTab('execution');
+          }
+          // Also refresh graph if available
+          if (session.graph) {
+            setGraphData(session.graph);
+          }
+        } catch {
+          // Session fetch failed — navigate to execution tab anyway and let user refresh
+          setActiveTab('execution');
+        }
+      } else if (decision === 'REJECT') {
+        speakAnnouncement('Blueprint rejected.');
+        setBlueprint(null);
+        setActiveTab('interview');
+      } else if (decision === 'EDIT') {
+        speakAnnouncement('Edit request submitted. Regenerating requirements.');
+        setBlueprint(null);
+        setActiveTab('interview');
+        // Re-submit modifications as a planning message so the backend re-interviews
+        if (modifications) {
+          setWizardLoading(true);
+          try {
+            const res = await submitPlanningMessage(modifications, language);
+            if (res.current_question) {
+              setCurrentQuestion(adaptQuestion(res.current_question, 1));
+              setQuestionNumber(1);
+            } else if (res.requirements_complete && res.blueprint) {
+              setBlueprint(res.blueprint);
+              setActiveTab('blueprint');
+            }
+          } catch (err: any) {
+            showError(err.message ?? 'Failed to submit edit request.');
+          } finally {
+            setWizardLoading(false);
+          }
+        }
+      }
+    } catch (err: any) {
+      showError(err.message ?? 'Blueprint decision failed.');
     } finally {
-      setWizardLoading(false);
+      setBlueprintDeciding(false);
     }
   };
 
-  // Approve Blueprint
-  const handleApproveBlueprint = async () => {
-    setApprovingBlueprint(true);
+  // ─────────────────────────────────────────────────────────────────────────
+  // EXECUTION DECISION — APPROVE / EDIT / REJECT
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const handleExecutionApprove = async () => {
+    setExecutionLoading(true);
     try {
-      const res = await approveBlueprint();
-      setBlueprint(res.blueprint);
-      setGraphData(res.graph);
-      speakAnnouncement('Blueprint approved. Contract Graph initialized.');
-      setActiveTab('graph');
-    } catch (err) {
-      console.error('Error approving blueprint:', err);
+      const res = await submitExecutionDecision('APPROVE');
+      setExecutionApprovalStatus(res.execution_approval_status);
+      speakAnnouncement('Execution approved. Agent is now coding.');
+
+      // Fetch updated results after execution completes
+      try {
+        const session = await fetchSessionState();
+        setCurrentStepIndex(session.current_step_index ?? 0);
+        setExecutionResults(session.execution_results ?? []);
+        setCheckpointId(session.checkpoint_id ?? null);
+        setExecutionApprovalStatus(session.execution_approval_status);
+        if (session.execution_plan) setExecutionPlan(session.execution_plan);
+      } catch {
+        // Non-fatal — results will be stale but status is updated
+      }
+    } catch (err: any) {
+      showError(err.message ?? 'Execution approval failed.');
     } finally {
-      setApprovingBlueprint(false);
+      setExecutionLoading(false);
     }
   };
 
-  // Graph Refresh & Reset
+  const handleExecutionReject = async () => {
+    setExecutionLoading(true);
+    try {
+      const res = await submitExecutionDecision('REJECT');
+      setExecutionApprovalStatus(res.execution_approval_status);
+      speakAnnouncement('Execution cancelled. No files were modified.');
+    } catch (err: any) {
+      showError(err.message ?? 'Execution rejection failed.');
+    } finally {
+      setExecutionLoading(false);
+    }
+  };
+
+  const handleExecutionEdit = async (_instructions: string) => {
+    setExecutionLoading(true);
+    try {
+      const res = await submitExecutionDecision('EDIT');
+      setExecutionApprovalStatus(res.execution_approval_status);
+      speakAnnouncement('Revision requested. Regenerating execution plan.');
+
+      // Fetch the regenerated plan
+      try {
+        const session = await fetchSessionState();
+        if (session.has_execution_plan && session.execution_plan) {
+          setExecutionPlan(session.execution_plan);
+          setExecutionApprovalStatus(session.execution_approval_status);
+          setCurrentStepIndex(0);
+          setExecutionResults([]);
+        }
+      } catch {
+        // Non-fatal
+      }
+    } catch (err: any) {
+      showError(err.message ?? 'Execution edit request failed.');
+    } finally {
+      setExecutionLoading(false);
+    }
+  };
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // CONTRACT GRAPH
+  // ─────────────────────────────────────────────────────────────────────────
+
   const handleRefreshGraph = async () => {
     setGraphLoading(true);
     try {
       const g = await fetchContractGraph();
       setGraphData(g);
-    } catch (err) {
-      console.error('Error refreshing graph:', err);
+    } catch (err: any) {
+      showError(err.message ?? 'Failed to refresh contract graph.');
     } finally {
       setGraphLoading(false);
     }
@@ -176,44 +437,66 @@ export const App: React.FC = () => {
       const res = await resetSampleGraph();
       setGraphData(res.graph);
       speakAnnouncement('Reference Student Management System Contract Graph loaded.');
-    } catch (err) {
-      console.error('Error resetting graph:', err);
+    } catch (err: any) {
+      showError(err.message ?? 'Failed to reset sample graph.');
     } finally {
       setGraphLoading(false);
     }
   };
 
-  // Impact Analysis
+  // ─────────────────────────────────────────────────────────────────────────
+  // IMPACT ANALYSIS
+  // ─────────────────────────────────────────────────────────────────────────
+
   const handleRunImpactAnalysis = async (entity: string, desc: string) => {
     setImpactLoading(true);
     try {
       const res = await submitImpactAnalysis(entity, desc);
       setImpactReport(res.impact_report);
-      if (res.permission_request) {
-        setPendingPermission(res.permission_request);
-      }
+      if (res.permission_request) setPendingPermission(res.permission_request);
       speakAnnouncement(`Impact analysis complete. Risk level: ${res.impact_report.risk_level}`);
-    } catch (err) {
-      console.error('Error running impact analysis:', err);
+    } catch (err: any) {
+      showError(err.message ?? 'Impact analysis failed.');
     } finally {
       setImpactLoading(false);
     }
   };
 
-  // Permission Decision
+  // ─────────────────────────────────────────────────────────────────────────
+  // PERMISSION DECISION
+  // ─────────────────────────────────────────────────────────────────────────
+
   const handlePermissionDecision = async (decision: PermissionResponse) => {
     try {
       await submitPermissionDecision(decision);
       setPendingPermission(null);
-      speakAnnouncement(`Permission ${decision.decision === 'reject' ? 'rejected' : 'granted'}`);
-    } catch (err) {
-      console.error('Error submitting permission decision:', err);
+      speakAnnouncement(
+        `Permission ${decision.decision === 'reject' ? 'rejected' : 'granted'}`
+      );
+    } catch (err: any) {
+      showError(err.message ?? 'Failed to submit permission decision.');
     }
   };
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // COMPUTED
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const executionPlanReady =
+    executionPlan !== null &&
+    executionApprovalStatus === 'WAITING_FOR_EXECUTION_APPROVAL';
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-indigo-500 selection:text-white">
-      {/* Top Header & Status */}
+
+      {/* Floating error banner */}
+      {error && <ErrorBanner message={error} onDismiss={() => setError(null)} />}
+
+      {/* Top Header & Navigation */}
       <Header
         health={health}
         hardware={hardware}
@@ -223,30 +506,66 @@ export const App: React.FC = () => {
         setVoiceEnabled={setVoiceEnabled}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
+        executionPlanReady={executionPlanReady}
       />
 
-      {/* Main Workspace Layout */}
+      {/* Main Workspace */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 md:p-6 grid grid-cols-1 lg:grid-cols-4 gap-6">
-        {/* Main Content Area (3 Cols on Desktop) */}
+
+        {/* Main Content Area (3 cols on desktop) */}
         <div className="lg:col-span-3">
+
           {activeTab === 'interview' && (
             <InterviewWizard
-              question={currentQuestion}
+              question={wizardStarted ? currentQuestion : null}
               questionNumber={questionNumber}
               totalQuestions={totalQuestions}
               loading={wizardLoading}
               onAnswer={handleWizardAnswer}
-              onRestart={handleRestartWizard}
+              onRestart={handleStartWizard}
             />
           )}
 
           {activeTab === 'blueprint' && (
             <BlueprintView
               blueprint={blueprint}
-              onApprove={handleApproveBlueprint}
-              approving={approvingBlueprint}
-              onViewGraph={() => setActiveTab('graph')}
+              onDecision={handleBlueprintDecision}
+              deciding={blueprintDeciding}
+              onViewGraph={() => setActiveTab('execution')}
             />
+          )}
+
+          {activeTab === 'execution' && executionPlan && (
+            <ExecutionPlanView
+              plan={executionPlan}
+              approvalStatus={executionApprovalStatus}
+              currentStepIndex={currentStepIndex}
+              executionResults={executionResults}
+              loading={executionLoading}
+              checkpointId={checkpointId}
+              onApprove={handleExecutionApprove}
+              onReject={handleExecutionReject}
+              onEdit={handleExecutionEdit}
+            />
+          )}
+
+          {activeTab === 'execution' && !executionPlan && (
+            <div className="glass-panel p-8 text-center max-w-xl mx-auto my-8">
+              <span className="text-4xl mb-4 block">🚀</span>
+              <h3 className="text-lg font-bold text-white mb-2">No Execution Plan Yet</h3>
+              <p className="text-slate-400 text-sm">
+                Approve your Architecture Blueprint to generate an execution plan.
+                The agent will break down your project into safe, ordered steps.
+              </p>
+              {blueprint && !blueprint.approved && (
+                <button
+                  onClick={() => setActiveTab('blueprint')}
+                  className="btn-primary mt-4"
+                >
+                  Go to Blueprint
+                </button>
+              )}
+            </div>
           )}
 
           {activeTab === 'graph' && (
@@ -279,21 +598,62 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {/* Live Activity & System Sidebar (1 Col on Desktop) */}
+        {/* Sidebar (1 col on desktop) */}
         <div className="space-y-4">
           <ActivityTimeline logs={activityLogs} />
 
-          {/* Quick Info Card */}
+          {/* System Quick-Info Card */}
           <div className="glass-panel p-4 text-xs space-y-3">
             <h4 className="font-bold text-white uppercase tracking-wider font-mono">
               Core Differentiator
             </h4>
             <p className="text-slate-300 leading-relaxed">
-              <strong>Contract Graph:</strong> Prevents schema drifts between Frontend, Backend, API, DB, and Tests through continuous semantic verification.
+              <strong>Contract Graph:</strong> Prevents schema drifts between Frontend,
+              Backend, API, DB, and Tests through continuous semantic verification.
             </p>
+
+            {/* Execution status summary when active */}
+            {executionPlan && (
+              <div className="pt-2 border-t border-white/5 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Execution Plan</span>
+                  <span className={`font-mono font-bold ${
+                    executionApprovalStatus === 'APPROVED' ? 'text-emerald-400' :
+                    executionApprovalStatus === 'REJECTED' ? 'text-rose-400' :
+                    executionApprovalStatus === 'WAITING_FOR_EXECUTION_APPROVAL' ? 'text-amber-400' :
+                    'text-slate-400'
+                  }`}>
+                    {executionApprovalStatus.replace(/_/g, ' ')}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Steps</span>
+                  <span className="font-mono text-white">
+                    {executionResults.length}/{executionPlan.ordered_steps.length}
+                  </span>
+                </div>
+                {checkpointId && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-400">Checkpoint</span>
+                    <span className="font-mono text-emerald-400 text-[10px] truncate max-w-[100px]">
+                      {checkpointId.slice(0, 12)}…
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[11px] text-slate-400">
               <span>Local-First Execution</span>
               <span className="text-emerald-400 font-bold">100% Private</span>
+            </div>
+
+            {/* WebSocket status */}
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              <span className="text-slate-400">
+                {isConnected ? 'Live backend connection' : 'Backend offline — polling disabled'}
+              </span>
             </div>
           </div>
         </div>
