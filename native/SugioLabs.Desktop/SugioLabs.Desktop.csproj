@@ -16,4 +16,8 @@
     <PublishTrimmed>false</PublishTrimmed>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
+
+  <ItemGroup Condition="Exists('Resources\SugioLabsEngine.exe')">
+    <EmbeddedResource Include="Resources\SugioLabsEngine.exe" LogicalName="SugioLabsEngine.exe" />
+  </ItemGroup>
 </Project>
