@@ -1,5 +1,5 @@
 #define MyAppName "Sugio Labs"
-#define MyAppVersion "0.3.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "Sugio Labs"
 #define MyAppExeName "SugioLabs.exe"
 
@@ -26,7 +26,7 @@ SetupLogging=yes
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\backend\dist\SugioLabs.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\native\publish\SugioLabs.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Sugio Labs"; Filename: "{app}\{#MyAppExeName}"
