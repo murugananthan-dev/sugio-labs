@@ -1,19 +1,13 @@
 import logging
-from typing import List, Dict, Any, Optional
-from ..models.schemas import (
-    RequirementQuestion,
-    RequirementSpec,
-    ProjectBlueprint,
-)
+from typing import Any, Dict, List, Optional
+
+from ..models.schemas import ProjectBlueprint, RequirementQuestion
 
 logger = logging.getLogger("sugio_labs.agents.requirement")
 
 
 class RequirementAgent:
-    """
-    Requirement Gathering Interview Agent.
-    Asks structured, one-by-one questions with intelligent recommendations and produces a complete Project Blueprint.
-    """
+    """Structured project interview that produces an implementation-ready blueprint."""
 
     def __init__(self):
         self._standard_questions: List[RequirementQuestion] = [
@@ -29,7 +23,7 @@ class RequirementAgent:
                     "Custom Web API & Dashboard",
                 ],
                 recommended_option="Student Management System (College ERP / Records)",
-                recommendation_reason="Ideal reference application for comprehensive cross-layer contract verification and college project demonstration.",
+                recommendation_reason="A strong capstone reference with CRUD, relationships, validation, roles, reporting, and cross-layer contracts.",
             ),
             RequirementQuestion(
                 id="Q2_USER_ROLES",
@@ -42,7 +36,7 @@ class RequirementAgent:
                     "Public Access (No Authentication required)",
                 ],
                 recommended_option="Multi-Role (Admin, Faculty/Staff, Student)",
-                recommendation_reason="Provides distinct data contracts, authentication boundaries, and permission models across application tiers.",
+                recommendation_reason="Multiple roles create realistic authorization boundaries and contracts to verify.",
             ),
             RequirementQuestion(
                 id="Q3_CORE_FEATURES",
@@ -55,20 +49,20 @@ class RequirementAgent:
                     "Task Board (Kanban), Due Dates, Priority Levels, Activity Timeline",
                 ],
                 recommended_option="Student Profiles, Course Enrollment, Gradebook, Attendance Tracking, Search & Filter",
-                recommendation_reason="Comprehensive feature set covering CRUD, relationships, validation constraints, and search queries.",
+                recommendation_reason="Covers CRUD, relationships, validation constraints, filtering, and reporting.",
             ),
             RequirementQuestion(
                 id="Q4_FRONTEND_STACK",
                 question="What frontend framework and styling system should we use?",
                 category="tech_stack",
                 options=[
-                    "React (TypeScript + Vite + Glassmorphic Dark Mode)",
+                    "React (TypeScript + Vite + App Workspace UI)",
                     "Next.js (React + TypeScript + App Router)",
                     "Vue.js 3 (Vite + TypeScript)",
                     "Vanilla HTML5 / CSS3 / JavaScript (No framework)",
                 ],
-                recommended_option="React (TypeScript + Vite + Glassmorphic Dark Mode)",
-                recommendation_reason="Fastest local dev build with Vite, strong TypeScript typing for Contract Graph alignment, and stunning modern aesthetics.",
+                recommended_option="React (TypeScript + Vite + App Workspace UI)",
+                recommendation_reason="Fast local builds and strong TypeScript contracts without adding framework overhead.",
             ),
             RequirementQuestion(
                 id="Q5_BACKEND_STACK",
@@ -81,7 +75,7 @@ class RequirementAgent:
                     "Flask (Python lightweight)",
                 ],
                 recommended_option="FastAPI (Python async + Pydantic validation)",
-                recommendation_reason="Native Pydantic schema validation enables automated cross-layer contract synchronization with zero boilerplate.",
+                recommendation_reason="Pydantic request/response models expose clean contracts for automated consistency checks.",
             ),
             RequirementQuestion(
                 id="Q6_DATABASE_STACK",
@@ -94,7 +88,7 @@ class RequirementAgent:
                     "MySQL / MariaDB",
                 ],
                 recommended_option="PostgreSQL (with SQLite fallback for lightweight local dev)",
-                recommendation_reason="Standard relational integrity, foreign key cascades, and easy offline local development with SQLite fallback.",
+                recommendation_reason="Relational integrity for production-style data with a zero-friction SQLite local option.",
             ),
             RequirementQuestion(
                 id="Q7_TESTING_STRATEGY",
@@ -106,138 +100,241 @@ class RequirementAgent:
                     "Basic manual verification and health checks",
                 ],
                 recommended_option="Pytest (Backend API + Unit) & Vitest (Frontend Components) + Contract Graph Validation",
-                recommendation_reason="Ensures end-to-end regression prevention and validates consistency between all 5 layers.",
+                recommendation_reason="Catches regressions at the API, component, and cross-layer contract levels.",
             ),
         ]
 
     def get_question(self, index: int) -> Optional[RequirementQuestion]:
-        """Gets a question by its 0-based index."""
-        if 0 <= index < len(self._standard_questions):
-            return self._standard_questions[index]
-        return None
+        return self._standard_questions[index] if 0 <= index < len(self._standard_questions) else None
 
     def get_all_questions(self) -> List[RequirementQuestion]:
-        """Returns the full list of interview questions."""
         return self._standard_questions
 
-    def generate_blueprint_from_answers(
-        self,
-        answers: Dict[str, str],
-        project_name: str = "Student Management System",
-    ) -> ProjectBlueprint:
-        """
-        Synthesizes collected answers into a comprehensive, structured Project Blueprint.
-        """
-        domain = answers.get("Q1_PROJECT_DOMAIN", "Student Management System")
-        roles_str = answers.get("Q2_USER_ROLES", "Admin, Faculty, Student")
-        features_str = answers.get("Q3_CORE_FEATURES", "Student Profiles, Course Enrollment, Gradebook, Attendance")
-        frontend = answers.get("Q4_FRONTEND_STACK", "React (TypeScript + Vite)")
-        backend = answers.get("Q5_BACKEND_STACK", "FastAPI (Python)")
-        database = answers.get("Q6_DATABASE_STACK", "PostgreSQL / SQLite")
-        testing = answers.get("Q7_TESTING_STRATEGY", "Pytest + Vitest + Contract Graph")
+    @staticmethod
+    def _roles(value: str) -> List[str]:
+        cleaned = value
+        for prefix in ["Multi-Role (", "Role-Based Access Control ("]:
+            cleaned = cleaned.replace(prefix, "")
+        cleaned = cleaned.replace(")", "")
+        if value.startswith("Single User"):
+            return ["Admin"]
+        if value.startswith("Public Access"):
+            return ["Public"]
+        return [part.strip() for part in cleaned.split(",") if part.strip()]
 
-        roles = [r.strip() for r in roles_str.replace("Multi-Role (", "").replace(")", "").split(",")]
-        features = [f.strip() for f in features_str.split(",")]
+    @staticmethod
+    def _domain_preset(domain: str) -> Dict[str, Any]:
+        lowered = domain.lower()
+        if "e-commerce" in lowered:
+            return {
+                "project_name": "E-Commerce & Inventory Management",
+                "entity": "Product",
+                "plural": "products",
+                "table": "products",
+                "fields": [
+                    "id INTEGER PRIMARY KEY",
+                    "sku VARCHAR(64) UNIQUE NOT NULL",
+                    "name VARCHAR(255) NOT NULL",
+                    "price DECIMAL(10,2) NOT NULL",
+                    "stock INTEGER NOT NULL DEFAULT 0",
+                    "status VARCHAR(30) NOT NULL",
+                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                ],
+                "secondary_table": {
+                    "table": "orders",
+                    "columns": [
+                        "id INTEGER PRIMARY KEY",
+                        "customer_email VARCHAR(255) NOT NULL",
+                        "total DECIMAL(10,2) NOT NULL",
+                        "status VARCHAR(30) NOT NULL",
+                        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                    ],
+                },
+            }
+        if "healthcare" in lowered or "clinic" in lowered:
+            return {
+                "project_name": "Clinic Appointment & Records",
+                "entity": "Patient",
+                "plural": "patients",
+                "table": "patients",
+                "fields": [
+                    "id INTEGER PRIMARY KEY",
+                    "name VARCHAR(255) NOT NULL",
+                    "email VARCHAR(255) UNIQUE",
+                    "phone VARCHAR(30)",
+                    "date_of_birth DATE",
+                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                ],
+                "secondary_table": {
+                    "table": "appointments",
+                    "columns": [
+                        "id INTEGER PRIMARY KEY",
+                        "patient_id INTEGER REFERENCES patients(id)",
+                        "doctor_name VARCHAR(255) NOT NULL",
+                        "scheduled_at TIMESTAMP NOT NULL",
+                        "status VARCHAR(30) NOT NULL",
+                    ],
+                },
+            }
+        if "task" in lowered or "collaboration" in lowered:
+            return {
+                "project_name": "Task Management & Team Collaboration",
+                "entity": "Task",
+                "plural": "tasks",
+                "table": "tasks",
+                "fields": [
+                    "id INTEGER PRIMARY KEY",
+                    "title VARCHAR(255) NOT NULL",
+                    "description TEXT",
+                    "status VARCHAR(30) NOT NULL",
+                    "priority VARCHAR(20) NOT NULL",
+                    "due_date DATE",
+                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                ],
+                "secondary_table": {
+                    "table": "task_activity",
+                    "columns": [
+                        "id INTEGER PRIMARY KEY",
+                        "task_id INTEGER REFERENCES tasks(id)",
+                        "event_type VARCHAR(50) NOT NULL",
+                        "message TEXT NOT NULL",
+                        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                    ],
+                },
+            }
+        if "custom" in lowered:
+            return {
+                "project_name": "Custom Web API & Dashboard",
+                "entity": "Record",
+                "plural": "records",
+                "table": "records",
+                "fields": [
+                    "id INTEGER PRIMARY KEY",
+                    "name VARCHAR(255) NOT NULL",
+                    "status VARCHAR(30) NOT NULL",
+                    "metadata JSON",
+                    "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                ],
+                "secondary_table": None,
+            }
+        return {
+            "project_name": "Student Management System",
+            "entity": "Student",
+            "plural": "students",
+            "table": "students",
+            "fields": [
+                "id INTEGER PRIMARY KEY",
+                "roll_number VARCHAR(50) UNIQUE NOT NULL",
+                "name VARCHAR(255) NOT NULL",
+                "email VARCHAR(255) UNIQUE NOT NULL",
+                "course VARCHAR(100) NOT NULL",
+                "phone VARCHAR(20)",
+                "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            ],
+            "secondary_table": {
+                "table": "courses",
+                "columns": [
+                    "id INTEGER PRIMARY KEY",
+                    "code VARCHAR(20) UNIQUE NOT NULL",
+                    "title VARCHAR(255) NOT NULL",
+                    "credits INTEGER NOT NULL",
+                ],
+            },
+        }
+
+    def generate_blueprint_from_answers(self, answers: Dict[str, str]) -> ProjectBlueprint:
+        domain = answers.get("Q1_PROJECT_DOMAIN", "Student Management System (College ERP / Records)")
+        roles_value = answers.get("Q2_USER_ROLES", "Multi-Role (Admin, Faculty/Staff, Student)")
+        features_value = answers.get("Q3_CORE_FEATURES", "Student Profiles, Course Enrollment, Gradebook, Attendance Tracking")
+        frontend = answers.get("Q4_FRONTEND_STACK", "React (TypeScript + Vite + App Workspace UI)")
+        backend = answers.get("Q5_BACKEND_STACK", "FastAPI (Python async + Pydantic validation)")
+        database = answers.get("Q6_DATABASE_STACK", "PostgreSQL (with SQLite fallback for lightweight local dev)")
+        testing = answers.get("Q7_TESTING_STRATEGY", "Pytest + Vitest + Contract Graph Validation")
+
+        preset = self._domain_preset(domain)
+        entity = preset["entity"]
+        plural = preset["plural"]
+        roles = self._roles(roles_value)
+        features = [feature.strip() for feature in features_value.split(",") if feature.strip()]
+
+        frontend_modules = [
+            {"name": f"{entity}List", "path": f"src/features/{plural}/{entity}List.tsx", "purpose": f"Browse, filter, and manage {plural}"},
+            {"name": f"{entity}Form", "path": f"src/features/{plural}/{entity}Form.tsx", "purpose": f"Create and edit {entity.lower()} data with validation"},
+            {"name": "Dashboard", "path": "src/features/dashboard/Dashboard.tsx", "purpose": "Operational summary and navigation"},
+        ]
+        backend_modules = [
+            {"name": f"{entity}Router", "path": f"app/api/{plural}.py", "purpose": f"REST endpoints for {entity.lower()} operations"},
+            {"name": f"{entity}Service", "path": f"app/services/{plural}.py", "purpose": "Business rules and transaction orchestration"},
+            {"name": f"{entity}Model", "path": f"app/models/{plural}.py", "purpose": "Persistence model"},
+            {"name": f"{entity}Schemas", "path": f"app/schemas/{plural}.py", "purpose": "Request and response validation contracts"},
+        ]
+        api_endpoints = [
+            {"method": "GET", "path": f"/api/v1/{plural}", "description": f"List {plural} with filters and pagination"},
+            {"method": "POST", "path": f"/api/v1/{plural}", "description": f"Create a new {entity.lower()}"},
+            {"method": "GET", "path": f"/api/v1/{plural}/{{id}}", "description": f"Get one {entity.lower()}"},
+            {"method": "PUT", "path": f"/api/v1/{plural}/{{id}}", "description": f"Update a {entity.lower()}"},
+            {"method": "DELETE", "path": f"/api/v1/{plural}/{{id}}", "description": f"Delete a {entity.lower()}"},
+        ]
+        db_schema = [{"table": preset["table"], "columns": preset["fields"]}]
+        if preset.get("secondary_table"):
+            db_schema.append(preset["secondary_table"])
 
         return ProjectBlueprint(
-            project_name=project_name,
-            objective=f"Develop a high-performance {domain} featuring full cross-layer contract consistency, role-based access, and automated verification.",
+            project_name=preset["project_name"],
+            objective=f"Build a local-first {domain} with consistent contracts, explicit permissions, and automated verification.",
             user_roles=roles,
             features=features,
             functional_requirements=[
-                f"FR-1: User authentication and role enforcement for {', '.join(roles)}.",
-                "FR-2: Complete CRUD operations on student profiles, course registrations, and attendance.",
-                "FR-3: Real-time search, sorting, and pagination across records.",
-                "FR-4: Data validation on phone numbers, email formats, and unique roll numbers.",
-                "FR-5: Export and reporting capabilities in CSV/JSON formats.",
+                f"FR-1: Enforce access rules for {', '.join(roles)}.",
+                f"FR-2: Provide validated CRUD workflows for {plural}.",
+                "FR-3: Support useful search, filtering, and operational feedback.",
+                "FR-4: Keep frontend payloads, API schemas, services, persistence, and tests synchronized.",
+                "FR-5: Record agent activity and require approval for risky mutations.",
             ],
             non_functional_requirements=[
-                "NFR-1: Sub-100ms API response time on local queries.",
-                "NFR-2: Zero cloud telemetry — all source code and database records remain strictly local.",
-                "NFR-3: Zero-trust permission gateway on all file writes and migrations.",
-                "NFR-4: Modern dark-mode responsive glassmorphic UI with accessibility.",
+                "NFR-1: Run fully on the local development machine by default.",
+                "NFR-2: Keep source code and project data local unless the user explicitly connects an external tool.",
+                "NFR-3: Gate file writes, shell execution, migrations, and destructive Git operations.",
+                "NFR-4: Provide a responsive developer-workspace UI with clear system and contract state.",
             ],
             selected_stack={
                 "frontend": frontend,
                 "backend": backend,
                 "database": database,
                 "testing": testing,
-                "agent_core": "LangGraph + Ollama + NetworkX Contract Graph",
+                "agent_core": "LangGraph + Ollama/fallback + NetworkX Contract Graph",
             },
-            architecture_summary="3-tier decoupled architecture: React Single-Page Application communicating via REST/WebSockets to FastAPI services, backed by relational ORM with automatic Contract Graph verification.",
-            frontend_modules=[
-                {"name": "StudentList", "path": "src/components/StudentList.tsx", "purpose": "Display, filter, and paginate student records"},
-                {"name": "StudentForm", "path": "src/components/StudentForm.tsx", "purpose": "Create and edit student details with form validation"},
-                {"name": "CourseEnrollment", "path": "src/components/CourseEnrollment.tsx", "purpose": "Enroll students into courses and manage electives"},
-                {"name": "AttendanceTracker", "path": "src/components/AttendanceTracker.tsx", "purpose": "Mark daily attendance and compute percentages"},
-            ],
-            backend_modules=[
-                {"name": "StudentRouter", "path": "app/api/students.py", "purpose": "REST endpoints for student CRUD"},
-                {"name": "StudentService", "path": "app/services/student_service.py", "purpose": "Business logic and transaction management"},
-                {"name": "StudentModel", "path": "app/models/student.py", "purpose": "SQLAlchemy ORM schema for student entity"},
-                {"name": "StudentSchemas", "path": "app/schemas/student.py", "purpose": "Pydantic request/response validation schemas"},
-            ],
-            api_endpoints=[
-                {"method": "GET", "path": "/api/v1/students", "description": "List all students with query filters"},
-                {"method": "POST", "path": "/api/v1/students", "description": "Create new student profile"},
-                {"method": "GET", "path": "/api/v1/students/{id}", "description": "Retrieve specific student details"},
-                {"method": "PUT", "path": "/api/v1/students/{id}", "description": "Update student information"},
-                {"method": "DELETE", "path": "/api/v1/students/{id}", "description": "Delete student record"},
-                {"method": "POST", "path": "/api/v1/students/{id}/enroll", "description": "Enroll student into course"},
-            ],
-            db_schema=[
-                {
-                    "table": "students",
-                    "columns": [
-                        "id INTEGER PRIMARY KEY",
-                        "roll_number VARCHAR(50) UNIQUE NOT NULL",
-                        "name VARCHAR(255) NOT NULL",
-                        "email VARCHAR(255) UNIQUE NOT NULL",
-                        "course VARCHAR(100) NOT NULL",
-                        "phone VARCHAR(20)",
-                        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                    ],
-                },
-                {
-                    "table": "courses",
-                    "columns": [
-                        "id INTEGER PRIMARY KEY",
-                        "code VARCHAR(20) UNIQUE NOT NULL",
-                        "title VARCHAR(255) NOT NULL",
-                        "credits INTEGER NOT NULL",
-                    ],
-                },
-                {
-                    "table": "enrollments",
-                    "columns": [
-                        "id INTEGER PRIMARY KEY",
-                        "student_id INTEGER REFERENCES students(id)",
-                        "course_id INTEGER REFERENCES courses(id)",
-                        "grade VARCHAR(5)",
-                        "enrolled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-                    ],
-                },
-            ],
+            architecture_summary=(
+                "A typed frontend talks to versioned API routes. Backend services own business rules and persistence. "
+                "The Contract Graph maps dependencies across requirements, UI, API, services, database, and tests; "
+                "the permission gateway sits in front of mutation-capable tools."
+            ),
+            frontend_modules=frontend_modules,
+            backend_modules=backend_modules,
+            api_endpoints=api_endpoints,
+            db_schema=db_schema,
             folder_structure=[
-                "frontend/src/components/",
+                "frontend/src/features/",
                 "frontend/src/services/",
                 "frontend/src/types/",
                 "backend/app/api/",
-                "backend/app/models/",
                 "backend/app/services/",
+                "backend/app/models/",
+                "backend/app/schemas/",
                 "backend/tests/",
             ],
-            testing_strategy="Automated Pytest API test suite verifying status codes, schema payloads, and database rollback, paired with Vitest component snapshot testing.",
+            testing_strategy=testing,
             development_steps=[
-                "1. Initialize database schema and migrations.",
-                "2. Implement backend Pydantic schemas and FastAPI route handlers.",
-                "3. Build React UI components with responsive glassmorphic cards.",
-                "4. Construct Contract Graph nodes and register cross-layer edge dependencies.",
-                "5. Execute automated test suite and verify contract integrity.",
+                "1. Create persistence models and request/response schemas.",
+                "2. Implement services and API routes with validation.",
+                "3. Build typed frontend workflows against the API contracts.",
+                "4. Generate Contract Graph nodes and dependency edges.",
+                "5. Run automated tests and contract drift verification before applying changes.",
             ],
             risks=[
-                "Schema drift if frontend form fields do not match backend Pydantic models (Mitigated by Contract Graph).",
-                "Unauthorized filesystem mutations (Mitigated by Zero-Trust Permission Gateway).",
+                "Cross-layer schema drift when fields or routes change independently.",
+                "Destructive local mutations without an explicit checkpoint and permission decision.",
+                "Local model availability or hardware constraints; mitigated by deterministic fallback behavior.",
             ],
             approved=False,
         )
