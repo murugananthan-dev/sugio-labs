@@ -48,17 +48,27 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install . "pywebview>=5.3,<7" "pyinstaller>=6.10,<7"
 
-      - name: Build portable Windows app
+      - name: Build single-file Windows app
         working-directory: backend
         shell: pwsh
         run: |
           pyinstaller desktop.py `
             --name SugioLabs `
+            --onefile `
             --windowed `
             --noconfirm `
             --clean `
             --add-data "frontend_dist;frontend_dist" `
             --collect-all webview
+
+      - name: Self-test packaged EXE
+        working-directory: backend
+        shell: pwsh
+        run: |
+          & .\dist\SugioLabs.exe --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "SugioLabs.exe self-test failed with exit code $LASTEXITCODE"
+          }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -73,18 +83,18 @@ jobs:
           }
           & $iscc "installer\SugioLabs.iss"
 
+      - name: Upload portable EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sugio-Labs-Windows-EXE
+          path: backend/dist/SugioLabs.exe
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: Sugio-Labs-Windows-Installer
           path: installer/output/Sugio-Labs-Setup.exe
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload portable app
-        uses: actions/upload-artifact@v4
-        with:
-          name: Sugio-Labs-Windows-Portable
-          path: backend/dist/SugioLabs/**
           if-no-files-found: error
           retention-days: 14
