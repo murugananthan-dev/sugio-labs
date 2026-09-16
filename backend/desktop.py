@@ -1,11 +1,13 @@
-"""Sugio Labs Windows desktop launcher.
+"""Sugio Labs cross-platform desktop launcher.
 
 Starts the local FastAPI engine on an ephemeral localhost port and opens the
-bundled React application inside a native pywebview window.
+bundled React application inside a native pywebview window. The same launcher
+is packaged separately for Windows, macOS, and Linux.
 """
 
 from __future__ import annotations
 
+import platform
 import socket
 import threading
 import time
@@ -15,6 +17,7 @@ import urllib.request
 import uvicorn
 import webview
 
+from app.config import settings
 from app.main import app
 
 
@@ -57,6 +60,10 @@ def wait_until_ready(url: str, timeout: float = 20.0) -> bool:
 
 
 def main() -> None:
+    # Force creation of writable per-user runtime directories before opening UI.
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.absolute_workspace_root.mkdir(parents=True, exist_ok=True)
+
     port = find_free_port()
     base_url = f"http://127.0.0.1:{port}"
     server = BackendServer(port)
@@ -66,8 +73,13 @@ def main() -> None:
         server.stop()
         raise RuntimeError("Sugio Labs local engine could not start.")
 
+    system = platform.system()
+    title = "Sugio Labs"
+    if system not in {"Windows", "Darwin", "Linux"}:
+        title = f"Sugio Labs ({system})"
+
     webview.create_window(
-        "Sugio Labs",
+        title,
         base_url,
         width=1440,
         height=900,
@@ -78,8 +90,8 @@ def main() -> None:
     )
 
     try:
-        # On modern Windows pywebview prefers the Edge Chromium / WebView2
-        # renderer and falls back automatically when required.
+        # pywebview selects the native renderer for each platform:
+        # WebView2 on Windows, WKWebView on macOS, and Qt/GTK on Linux.
         webview.start(debug=False, private_mode=False)
     finally:
         server.stop()
