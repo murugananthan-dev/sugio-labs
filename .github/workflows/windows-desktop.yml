@@ -1,4 +1,4 @@
-name: Sugio Labs Windows Desktop
+name: Sugio Labs Native Windows Desktop
 
 on:
   push:
@@ -7,112 +7,135 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build-native-windows:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build React frontend
-        working-directory: frontend
-        run: npm run build
-
-      - name: Stage frontend for local engine
-        shell: pwsh
-        run: |
-          if (Test-Path backend/frontend_dist) {
-            Remove-Item backend/frontend_dist -Recurse -Force
-          }
-          Copy-Item frontend/dist backend/frontend_dist -Recurse
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install engine build dependencies
+      - name: Install Python backend build dependencies
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
           python -m pip install . "pyinstaller>=6.10,<7"
 
-      - name: Build hidden local engine
+      - name: Build compulsory Python backend engine
         working-directory: backend
         shell: pwsh
         run: |
-          pyinstaller desktop_server.py `
+          pyinstaller ipc_engine.py `
             --name SugioLabsEngine `
             --onefile `
             --windowed `
             --noconfirm `
             --clean `
-            --add-data "frontend_dist;frontend_dist" `
             --collect-all langchain_core `
             --collect-all langchain_community `
             --collect-all langchain_ollama `
             --collect-all langgraph `
-            --collect-all ollama
+            --collect-all ollama `
+            --collect-all networkx
 
-      - name: Test packaged local engine
+      - name: Test packaged Python IPC engine
         working-directory: backend
         shell: pwsh
         run: |
-          $port = 18765
-          $process = Start-Process -FilePath ".\dist\SugioLabsEngine.exe" -ArgumentList "--port", "$port" -PassThru -WindowStyle Hidden
-          try {
-            $ready = $false
-            for ($i = 0; $i -lt 80; $i++) {
-              Start-Sleep -Milliseconds 250
-              try {
-                $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/v1/health" -TimeoutSec 2
-                $home = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/" -TimeoutSec 2
-                if ($health.StatusCode -eq 200 -and $home.StatusCode -eq 200 -and $home.Content -match "<!doctype html") {
-                  $ready = $true
-                  break
-                }
-              } catch {}
-            }
-            if (-not $ready) {
-              throw "Packaged Sugio Labs engine did not pass its health/UI test."
-            }
-          } finally {
-            if (-not $process.HasExited) {
-              Stop-Process -Id $process.Id -Force
-            }
-          }
+          @'
+          import json
+          import subprocess
+          import sys
 
-      - name: Stage engine for Electron
+          p = subprocess.Popen(
+              [r"dist\SugioLabsEngine.exe"],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE,
+              text=True,
+              encoding="utf-8",
+          )
+          try:
+              request = json.dumps({"id": "ci", "command": "ping", "payload": {}})
+              p.stdin.write(request + "\n")
+              p.stdin.flush()
+              line = p.stdout.readline().strip()
+              data = json.loads(line)
+              if not data.get("ok") or data.get("result", {}).get("status") != "ok":
+                  raise SystemExit(f"Unexpected IPC response: {data}")
+              p.stdin.write(json.dumps({"id": "bye", "command": "shutdown", "payload": {}}) + "\n")
+              p.stdin.flush()
+              p.stdout.readline()
+          finally:
+              try:
+                  p.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  p.kill()
+          '@ | Set-Content -Encoding UTF8 .\test_packaged_engine.py
+          python .\test_packaged_engine.py
+
+      - name: Embed Python backend into native desktop project
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force desktop/engine | Out-Null
-          Copy-Item backend/dist/SugioLabsEngine.exe desktop/engine/SugioLabsEngine.exe -Force
+          New-Item -ItemType Directory -Force native/SugioLabs.Desktop/Resources | Out-Null
+          Copy-Item backend/dist/SugioLabsEngine.exe native/SugioLabs.Desktop/Resources/SugioLabsEngine.exe -Force
 
-      - name: Install Electron desktop dependencies
-        working-directory: desktop
-        run: npm install --no-audit --no-fund
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
-      - name: Build Windows desktop software
-        working-directory: desktop
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run dist:win
+      - name: Restore native desktop project
+        run: dotnet restore native/SugioLabs.Desktop/SugioLabs.Desktop.csproj
 
-      - name: Upload Windows software
+      - name: Publish single-file native EXE
+        shell: pwsh
+        run: |
+          dotnet publish native/SugioLabs.Desktop/SugioLabs.Desktop.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o native/publish
+
+      - name: Self-test final SugioLabs.exe
+        shell: pwsh
+        run: |
+          & .\native\publish\SugioLabs.exe --self-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native SugioLabs.exe self-test failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc "installer\SugioLabs.iss"
+
+      - name: Upload native portable EXE
         uses: actions/upload-artifact@v4
         with:
-          name: Sugio-Labs-Windows-Software
-          path: desktop/dist/*.exe
+          name: Sugio-Labs-Native-EXE
+          path: native/publish/SugioLabs.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload native setup EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sugio-Labs-Native-Installer
+          path: installer/output/Sugio-Labs-Setup.exe
           if-no-files-found: error
           retention-days: 14
