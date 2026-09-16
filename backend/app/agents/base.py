@@ -1,10 +1,9 @@
-import os
-import json
 import logging
 import platform
-import psutil
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
 import httpx
+import psutil
 
 from ..config import settings
 
@@ -12,17 +11,13 @@ logger = logging.getLogger("sugio_labs.agents.base")
 
 
 class LocalLLMClient:
-    """
-    Client for Local LLM execution via Ollama.
-    Supports offline fallback, hardware detection, model recommendations, and structured output parsing.
-    """
+    """Local Ollama client with a deterministic offline assistant fallback."""
 
     def __init__(self, base_url: Optional[str] = None):
         self.base_url = base_url or settings.ollama_base_url
         self.client = httpx.AsyncClient(timeout=60.0)
 
     async def is_ollama_online(self) -> bool:
-        """Checks if local Ollama daemon is reachable."""
         try:
             res = await self.client.get(f"{self.base_url}/api/tags", timeout=2.0)
             return res.status_code == 200
@@ -30,23 +25,20 @@ class LocalLLMClient:
             return False
 
     async def list_local_models(self) -> List[str]:
-        """Lists downloaded models in Ollama."""
         try:
             res = await self.client.get(f"{self.base_url}/api/tags", timeout=3.0)
             if res.status_code == 200:
                 data = res.json()
                 return [m["name"] for m in data.get("models", [])]
-        except Exception as e:
-            logger.warning(f"Unable to query Ollama models: {e}")
+        except Exception as exc:
+            logger.debug("Unable to query Ollama models: %s", exc)
         return []
 
     def get_hardware_profile(self) -> Dict[str, Any]:
-        """Detects system RAM, CPU cores, and OS to recommend optimal local model sizes."""
         ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
-        cpu_count = psutil.cpu_count(logical=True)
+        cpu_count = psutil.cpu_count(logical=True) or 1
         os_info = f"{platform.system()} {platform.release()}"
 
-        # Recommendation logic
         if ram_gb >= 16:
             rec_model = "llama3:8b or qwen2.5-coder:7b (Q4_K_M)"
             rec_tier = "High Performance (7B - 8B Models)"
@@ -65,6 +57,43 @@ class LocalLLMClient:
             "recommended_tier": rec_tier,
         }
 
+    def heuristic_response(self, prompt: str, language: str = "en") -> str:
+        """Useful local-only response when Ollama is unavailable."""
+        normalized = prompt.lower()
+
+        if language == "ta":
+            prefix = "Ollama offline-ஆ இருக்கு. Sugio-வின் local fallback பதில்: "
+        elif language == "tanglish":
+            prefix = "Ollama offline. Sugio local fallback-la: "
+        else:
+            prefix = "Ollama is offline, so Sugio is using its built-in local fallback. "
+
+        if any(word in normalized for word in ["architecture", "stack", "design"]):
+            return prefix + (
+                "Keep the app split into React UI, FastAPI API/services, a relational persistence layer, "
+                "and automated tests. Treat request/response schemas as contracts and connect them to the "
+                "components, services, database entities, and tests that depend on them."
+            )
+        if any(word in normalized for word in ["contract", "graph", "schema", "drift"]):
+            return prefix + (
+                "Use the Contract Graph to trace Requirement → Frontend → API → Backend → Database → Tests. "
+                "Before changing a field or endpoint, run Impact Analysis and update every affected contract together."
+            )
+        if any(word in normalized for word in ["test", "verify", "quality"]):
+            return prefix + (
+                "Verify changes in layers: schema validation first, backend unit/API tests second, frontend build/tests third, "
+                "then Contract Graph drift checks. Create a Git checkpoint before multi-file changes."
+            )
+        if any(word in normalized for word in ["permission", "safe", "security"]):
+            return prefix + (
+                "Keep reads low-friction, but require explicit approval for file writes, shell execution, migrations, "
+                "network access, and destructive Git operations. Prefer allow-once for unfamiliar actions."
+            )
+        return prefix + (
+            "I can still help with project planning, architecture, contract impact, testing strategy, and safe execution. "
+            "Start Ollama when you want free-form model generation."
+        )
+
     async def generate(
         self,
         prompt: str,
@@ -72,14 +101,10 @@ class LocalLLMClient:
         model: Optional[str] = None,
         temperature: float = 0.2,
     ) -> str:
-        """
-        Sends generation request to local Ollama.
-        Raises ConnectionError if Ollama is unreachable.
-        """
         target_model = model or settings.default_model
 
         if not await self.is_ollama_online():
-            raise ConnectionError(f"Ollama is unreachable at {self.base_url}. Cannot proceed with local AI generation.")
+            return self.heuristic_response(prompt)
 
         try:
             payload = {
@@ -92,20 +117,17 @@ class LocalLLMClient:
             res = await self.client.post(f"{self.base_url}/api/generate", json=payload, timeout=45.0)
             res.raise_for_status()
             return res.json().get("response", "").strip()
-        except Exception as e:
-            logger.error(f"Ollama generation failed: {e}.")
-            raise ConnectionError(f"Failed to generate using local Ollama model {target_model}: {e}")
+        except Exception as exc:
+            logger.warning("Ollama generation failed; using offline fallback: %s", exc)
+            return self.heuristic_response(prompt)
 
     def get_chat_model(self, model: Optional[str] = None, temperature: float = 0.2):
-        """
-        Returns a LangChain-compatible ChatOllama instance connected to the local Ollama daemon.
-        """
         from langchain_ollama import ChatOllama
-        target_model = model or settings.default_model
+
         return ChatOllama(
             base_url=self.base_url,
-            model=target_model,
-            temperature=temperature
+            model=model or settings.default_model,
+            temperature=temperature,
         )
 
 
