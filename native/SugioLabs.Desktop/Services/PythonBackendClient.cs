@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Text.Json;
 
 namespace SugioLabs.Desktop.Services;
@@ -8,26 +9,19 @@ public sealed class PythonBackendClient : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private Process? _process;
     private int _sequence;
+    private bool _disposed;
 
     public bool IsRunning => _process is { HasExited: false };
 
     public async Task StartAsync()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         if (IsRunning)
         {
             return;
         }
 
-        var baseDir = AppContext.BaseDirectory;
-        var candidates = new[]
-        {
-            Path.Combine(baseDir, "engine", "SugioLabsEngine.exe"),
-            Path.Combine(baseDir, "SugioLabsEngine.exe"),
-        };
-
-        var enginePath = candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Sugio Labs Python backend executable was not found.", candidates[0]);
-
+        var enginePath = ResolveEnginePath();
         var startInfo = new ProcessStartInfo
         {
             FileName = enginePath,
@@ -66,7 +60,7 @@ public sealed class PythonBackendClient : IAsyncDisposable
             }
         });
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
         while (!timeout.IsCancellationRequested)
         {
             try
@@ -86,11 +80,54 @@ public sealed class PythonBackendClient : IAsyncDisposable
         throw new TimeoutException("Sugio Labs Python backend did not become ready.");
     }
 
+    private static string ResolveEnginePath()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var developmentCandidates = new[]
+        {
+            Path.Combine(baseDir, "engine", "SugioLabsEngine.exe"),
+            Path.Combine(baseDir, "SugioLabsEngine.exe"),
+        };
+
+        var developmentPath = developmentCandidates.FirstOrDefault(File.Exists);
+        if (developmentPath is not null)
+        {
+            return developmentPath;
+        }
+
+        var assembly = Assembly.GetExecutingAssembly();
+        using var resource = assembly.GetManifestResourceStream("SugioLabsEngine.exe")
+            ?? throw new FileNotFoundException(
+                "The compulsory Python backend is not embedded in this Sugio Labs build.");
+
+        var version = assembly.GetName().Version?.ToString(3) ?? "1.0.0";
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var runtimeDirectory = Path.Combine(localAppData, "Sugio Labs", "Runtime", version);
+        Directory.CreateDirectory(runtimeDirectory);
+
+        var enginePath = Path.Combine(runtimeDirectory, "SugioLabsEngine.exe");
+        if (File.Exists(enginePath) && new FileInfo(enginePath).Length == resource.Length)
+        {
+            return enginePath;
+        }
+
+        var temporaryPath = enginePath + ".new";
+        using (var output = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            resource.CopyTo(output);
+            output.Flush(flushToDisk: true);
+        }
+
+        File.Move(temporaryPath, enginePath, overwrite: true);
+        return enginePath;
+    }
+
     public async Task<JsonElement> SendAsync(
         string command,
         object? payload = null,
         CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -143,15 +180,14 @@ public sealed class PythonBackendClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_process is null)
+        if (_disposed)
         {
-            _gate.Dispose();
             return;
         }
 
         try
         {
-            if (!_process.HasExited)
+            if (_process is { HasExited: false })
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 try
@@ -166,12 +202,13 @@ public sealed class PythonBackendClient : IAsyncDisposable
         }
         finally
         {
-            if (!_process.HasExited)
+            if (_process is { HasExited: false })
             {
                 _process.Kill(entireProcessTree: true);
             }
-            _process.Dispose();
+            _process?.Dispose();
             _process = null;
+            _disposed = true;
             _gate.Dispose();
         }
     }
