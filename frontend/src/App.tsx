@@ -11,7 +11,6 @@ import {
   Code2,
   Cpu,
   Database,
-  FileCode2,
   FlaskConical,
   GitBranch,
   Layers3,
@@ -67,8 +66,9 @@ import { useWebSocket } from './services/useWebSocket';
 
 type ViewKey = 'plan' | 'blueprint' | 'contracts' | 'impact' | 'git' | 'assistant';
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string };
+type AppIcon = any;
 
-const navItems: Array<{ key: ViewKey; label: string; hint: string; icon: React.ComponentType<{ size?: number }> }> = [
+const navItems: Array<{ key: ViewKey; label: string; hint: string; icon: AppIcon }> = [
   { key: 'plan', label: 'Plan', hint: 'Requirements', icon: Sparkles },
   { key: 'blueprint', label: 'Blueprint', hint: 'Architecture', icon: Workflow },
   { key: 'contracts', label: 'Contracts', hint: 'Cross-layer graph', icon: Network },
@@ -77,7 +77,7 @@ const navItems: Array<{ key: ViewKey; label: string; hint: string; icon: React.C
   { key: 'assistant', label: 'Assistant', hint: 'Local AI', icon: MessageSquare },
 ];
 
-const layerMeta: Record<string, { icon: React.ComponentType<{ size?: number }>; label: string }> = {
+const layerMeta: Record<string, { icon: AppIcon; label: string }> = {
   requirement: { icon: Layers3, label: 'Requirement' },
   frontend: { icon: Code2, label: 'Frontend' },
   api: { icon: Server, label: 'API' },
@@ -94,7 +94,7 @@ function AppBadge({ children, tone = 'neutral' }: { children: React.ReactNode; t
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
-function EmptyState({ icon: Icon, title, text }: { icon: React.ComponentType<{ size?: number }>; title: string; text: string }) {
+function EmptyState({ icon: Icon, title, text }: { icon: AppIcon; title: string; text: string }) {
   return (
     <div className="empty-state">
       <div className="empty-icon"><Icon size={22} /></div>
@@ -175,13 +175,19 @@ export const App: React.FC = () => {
 
       if (session) {
         setActivities(session.activity_logs ?? []);
-        if (session.blueprint) setBlueprint(session.blueprint);
+        if (session.blueprint) {
+          setBlueprint(session.blueprint);
+          setQuestion(null);
+          if (session.blueprint.approved) setView('contracts');
+        }
         if (session.question_index) setQuestionIndex(Math.min(session.question_index + 1, 7));
       }
 
-      const interview = await startInterview();
-      setQuestion(interview.question);
-      setQuestionIndex(1);
+      if (!session?.blueprint) {
+        const interview = await startInterview();
+        setQuestion(interview.question);
+        setQuestionIndex(1);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to initialize Sugio Labs.');
     } finally {
@@ -531,7 +537,7 @@ export const App: React.FC = () => {
               ['Database', impactReport.affected_database, Database],
               ['Tests', impactReport.affected_tests, FlaskConical],
             ].map(([label, items, Icon]) => {
-              const TypedIcon = Icon as React.ComponentType<{ size?: number }>;
+              const TypedIcon: any = Icon;
               const typedItems = items as string[];
               return <div className="impact-layer" key={label as string}><div><TypedIcon size={17} /><strong>{label as string}</strong><span>{typedItems.length}</span></div>{typedItems.length ? typedItems.map((item) => <small key={item}>{item}</small>) : <small className="muted">No direct impact</small>}</div>;
             })}
