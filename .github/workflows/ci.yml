@@ -37,3 +37,28 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run build
+
+  package:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create full project ZIP
+        run: |
+          mkdir -p package/sugio-labs-full-app
+          rsync -a ./ package/sugio-labs-full-app/ \
+            --exclude package \
+            --exclude .git \
+            --exclude frontend/node_modules \
+            --exclude frontend/dist \
+            --exclude backend/.venv \
+            --exclude backend/.pytest_cache
+          cd package
+          zip -r sugio-labs-full-app.zip sugio-labs-full-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sugio-labs-full-app
+          path: package/sugio-labs-full-app.zip
+          if-no-files-found: error
+          retention-days: 7
