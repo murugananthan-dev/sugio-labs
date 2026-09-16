@@ -11,7 +11,7 @@ import {
   MCPToolDefinition,
 } from '../types';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/v1';
+const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 
 async function fetchWrapper<T>(url: string, options?: RequestInit): Promise<T> {
   try {
@@ -33,6 +33,10 @@ export async function fetchHealth(): Promise<HealthStatus> {
 
 export async function fetchHardware(): Promise<HardwareProfile> {
   return fetchWrapper<HardwareProfile>(`${API_BASE}/system/hardware`);
+}
+
+export async function fetchInterviewQuestions(): Promise<RequirementQuestion[]> {
+  return fetchWrapper<RequirementQuestion[]>(`${API_BASE}/interview/questions`);
 }
 
 export async function startInterview(): Promise<{ question: RequirementQuestion }> {
@@ -102,12 +106,14 @@ export async function sendChatMessage(
   });
 }
 
-// Git Checkpoints & Rollback APIs
 export async function fetchCheckpoints(): Promise<GitCheckpoint[]> {
   return fetchWrapper<GitCheckpoint[]>(`${API_BASE}/git/checkpoints`);
 }
 
-export async function createCheckpoint(name: string, description: string = ''): Promise<{ status: string; checkpoint: GitCheckpoint }> {
+export async function createCheckpoint(
+  name: string,
+  description: string = ''
+): Promise<{ status: string; checkpoint: GitCheckpoint }> {
   return fetchWrapper(`${API_BASE}/git/checkpoint`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -127,7 +133,6 @@ export async function fetchGitDiff(): Promise<{ diff: string }> {
   return fetchWrapper<{ diff: string }>(`${API_BASE}/git/diff`);
 }
 
-// Sandboxed Shell & MCP
 export async function executeShellCommand(command: string): Promise<any> {
   return fetchWrapper(`${API_BASE}/shell/execute`, {
     method: 'POST',

@@ -1,26 +1,18 @@
 import logging
-from typing import Dict, Any, List, Optional
-from fastapi import APIRouter, HTTPException, Depends
+from typing import Any, Dict
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..models.schemas import (
-    PermissionRequest,
-    PermissionResponse,
-    ContractGraphData,
-    ContractNode,
-    ContractEdge,
-    ImpactReport,
-    ProjectBlueprint,
-    RequirementQuestion,
-)
-from ..agents.supervisor import agent_supervisor
 from ..agents.base import local_llm
 from ..agents.requirement_agent import requirement_agent
+from ..agents.supervisor import agent_supervisor, chat_graph
 from ..contract_graph.graph import contract_graph
-from ..permissions.manager import permission_manager
+from ..models.schemas import PermissionAction, PermissionResponse
+from ..permissions.manager import PermissionDeniedError, permission_manager
 from ..tools.git_tools import GitTool
-from ..tools.shell_tools import ShellTool
 from ..tools.mcp_client import mcp_gateway
+from ..tools.shell_tools import ShellTool
 
 logger = logging.getLogger("sugio_labs.api.routes")
 router = APIRouter(prefix="/api/v1")
@@ -28,210 +20,188 @@ git_tool = GitTool()
 shell_tool = ShellTool()
 
 
-# ============================================================================
-# 1. HEALTH & SYSTEM PROFILE
-# ============================================================================
-
 @router.get("/health")
 async def health_check():
-    """Returns backend service health status and Ollama availability."""
     ollama_ok = await local_llm.is_ollama_online()
     models = await local_llm.list_local_models() if ollama_ok else []
     return {
         "status": "healthy",
         "service": "Sugio Labs Backend",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "ollama_online": ollama_ok,
         "local_models_detected": models,
+        "assistant_mode": "ollama" if ollama_ok else "local_fallback",
     }
+
 
 @router.get("/system/hardware")
 async def get_hardware_info():
-    """Returns detected hardware profile (RAM, CPU, GPU recommendation)."""
     return local_llm.get_hardware_profile()
 
 
-# ============================================================================
-# 2. REQUIREMENT INTERVIEW & BLUEPRINT
-# ============================================================================
-
 @router.get("/interview/questions")
 async def list_interview_questions():
-    """Lists all preset interview questions."""
     return requirement_agent.get_all_questions()
+
 
 @router.post("/interview/start")
 async def start_interview():
-    """Initializes a new requirement interview."""
-    first_q = await agent_supervisor.start_interview()
-    return {"question": first_q}
+    first_question = await agent_supervisor.start_interview()
+    return {"question": first_question}
+
 
 class AnswerPayload(BaseModel):
     question_id: str
     answer: str
 
+
 @router.post("/interview/answer")
 async def submit_answer(payload: AnswerPayload):
-    """Submits an answer and returns next question or the final blueprint."""
-    res = await agent_supervisor.answer_question(payload.question_id, payload.answer)
-    return res
+    return await agent_supervisor.answer_question(payload.question_id, payload.answer)
+
 
 @router.post("/blueprint/approve")
 async def approve_blueprint():
-    """Approves active blueprint and initializes the Contract Graph."""
     try:
-        res = await agent_supervisor.approve_blueprint()
-        return res
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return await agent_supervisor.approve_blueprint()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-
-# ============================================================================
-# 3. CONTRACT GRAPH & IMPACT ANALYSIS
-# ============================================================================
 
 @router.get("/contract-graph")
 async def get_contract_graph():
-    """Returns current cross-layer Contract Graph data."""
     return contract_graph.export_graph()
+
 
 @router.post("/contract-graph/sample")
 async def reset_sample_graph():
-    """Resets the Contract Graph to the reference Student Management System graph."""
     contract_graph.build_sample_graph()
     return {"status": "success", "graph": contract_graph.export_graph()}
 
+
 class ImpactAnalysisRequest(BaseModel):
-    target_entity: str = Field(..., description="Target node, table, field, or component name")
-    change_description: str = Field(..., description="Human language description of the requested modification")
+    target_entity: str = Field(..., description="Target node, table, field, route, or component")
+    change_description: str = Field(..., description="Human-language change request")
+
 
 @router.post("/impact-analysis")
 async def perform_impact_analysis(payload: ImpactAnalysisRequest):
-    """Calculates blast radius and contract violations for a requested change."""
-    res = await agent_supervisor.handle_change_request(payload.change_description)
-    return res
+    return await agent_supervisor.handle_change_request(
+        change_description=payload.change_description,
+        target_entity=payload.target_entity,
+    )
 
-
-# ============================================================================
-# 4. HUMAN-IN-THE-LOOP PERMISSION GATEWAY
-# ============================================================================
 
 @router.get("/permissions/pending")
 async def get_pending_permissions():
-    """Retrieves all pending permission requests requiring user approval."""
-    pending = permission_manager.get_pending_requests()
-    return list(pending.values())
+    return list(permission_manager.get_pending_requests().values())
+
 
 @router.post("/permissions/decision")
 async def submit_permission_decision(decision: PermissionResponse):
-    """Submits user decision (ALLOW_ONCE, ALLOW_FOR_PROJECT, REJECT)."""
-    res = await agent_supervisor.submit_permission_decision(decision)
-    return res
+    return await agent_supervisor.submit_permission_decision(decision)
 
-
-# ============================================================================
-# 5. GIT SAFETY CHECKPOINTS & ROLLBACK
-# ============================================================================
 
 class CheckpointPayload(BaseModel):
     name: str
     description: str = ""
 
+
 @router.get("/git/checkpoints")
 async def list_checkpoints():
-    """Lists all recorded Git checkpoints."""
     return git_tool.list_checkpoints()
+
 
 @router.post("/git/checkpoint")
 async def create_checkpoint(payload: CheckpointPayload):
-    """Creates a safety snapshot checkpoint before modifying files."""
-    cp = git_tool.create_checkpoint(payload.name, payload.description)
-    return {"status": "created", "checkpoint": cp.to_dict()}
+    checkpoint = git_tool.create_checkpoint(payload.name, payload.description)
+    return {"status": "created", "checkpoint": checkpoint.to_dict()}
+
 
 class RollbackPayload(BaseModel):
     checkpoint_id: str
 
+
 @router.post("/git/rollback")
 async def rollback_to_checkpoint(payload: RollbackPayload):
-    """Rolls back the workspace sandbox to a specific checkpoint."""
     try:
-        ok = git_tool.rollback_to_checkpoint(payload.checkpoint_id)
+        git_tool.rollback_to_checkpoint(payload.checkpoint_id)
         return {"status": "success", "rolled_back_to": payload.checkpoint_id}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except PermissionDeniedError as exc:
+        target = f"rollback:{payload.checkpoint_id}"
+        await permission_manager.request_permission(
+            action=PermissionAction.GIT_OPERATION,
+            target=target,
+            details={
+                "checkpoint_id": payload.checkpoint_id,
+                "warning": "Rollback can discard files created after this checkpoint.",
+            },
+            risk_level="high",
+            project_id=git_tool.session_id,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Permission required for rollback. Approve the request, then run Restore again.",
+        ) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @router.get("/git/diff")
 async def get_git_diff():
-    """Returns working directory diff."""
     return {"diff": git_tool.get_diff()}
 
-
-# ============================================================================
-# 6. SANDBOXED SHELL & MCP TOOLS
-# ============================================================================
 
 class ShellPayload(BaseModel):
     command: str
     timeout_seconds: int = 60
 
+
 @router.post("/shell/execute")
 async def run_shell_command(payload: ShellPayload):
-    """Executes a command inside the project sandbox with permission checks."""
     try:
-        res = await shell_tool.execute(payload.command, payload.timeout_seconds)
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        return await shell_tool.execute(payload.command, payload.timeout_seconds)
+    except Exception as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
 
 @router.get("/mcp/tools")
 async def list_mcp_tools():
-    """Returns available MCP tool definitions."""
     return mcp_gateway.get_tool_definitions()
+
 
 class MCPExecutePayload(BaseModel):
     tool_name: str
     args: Dict[str, Any]
 
+
 @router.post("/mcp/execute")
 async def execute_mcp_tool(payload: MCPExecutePayload):
-    """Executes an MCP tool with permission gating."""
     try:
-        res = await mcp_gateway.execute_tool(payload.tool_name, payload.args)
-        return res
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return await mcp_gateway.execute_tool(payload.tool_name, payload.args)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-
-# ============================================================================
-# 7. SUPERVISOR SESSION & CHAT
-# ============================================================================
 
 @router.get("/session/state")
 async def get_session_state():
-    """Returns full supervisor session state, activity timeline, and active configs."""
     state = agent_supervisor.get_session_state()
     state["activity_logs"] = agent_supervisor.activity_logs
     state["checkpoints"] = git_tool.list_checkpoints()
     return state
 
+
 class ChatPayload(BaseModel):
     message: str
     language: str = Field(default="en", description="en, ta, tanglish")
 
+
 @router.post("/chat")
 async def chat_with_agent(payload: ChatPayload):
-    """Interacts with Sugio Labs supervisor with multilingual assistance."""
-    from ..agents.supervisor import chat_graph
-    
     state = {
         "messages": [{"role": "user", "content": payload.message}],
-        "language": payload.language
+        "language": payload.language,
     }
-    
-    # LangGraph invocation
     result_state = chat_graph.invoke(state)
-    
-    # Extract assistant's reply from updated state messages
     response = result_state["messages"][-1]["content"] if result_state["messages"] else "No response generated."
-    
     return {"reply": response, "language": payload.language}
