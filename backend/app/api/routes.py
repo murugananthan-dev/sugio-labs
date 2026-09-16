@@ -124,12 +124,11 @@ class RollbackPayload(BaseModel):
 
 @router.post("/git/rollback")
 async def rollback_to_checkpoint(payload: RollbackPayload):
-    target = f"rollback:{payload.checkpoint_id}"
-    if not permission_manager.is_action_permitted(
-        PermissionAction.GIT_OPERATION,
-        target,
-        git_tool.session_id,
-    ):
+    try:
+        git_tool.rollback_to_checkpoint(payload.checkpoint_id)
+        return {"status": "success", "rolled_back_to": payload.checkpoint_id}
+    except PermissionDeniedError as exc:
+        target = f"rollback:{payload.checkpoint_id}"
         await permission_manager.request_permission(
             action=PermissionAction.GIT_OPERATION,
             target=target,
@@ -143,12 +142,8 @@ async def rollback_to_checkpoint(payload: RollbackPayload):
         raise HTTPException(
             status_code=403,
             detail="Permission required for rollback. Approve the request, then run Restore again.",
-        )
-
-    try:
-        git_tool.rollback_to_checkpoint(payload.checkpoint_id)
-        return {"status": "success", "rolled_back_to": payload.checkpoint_id}
-    except (ValueError, RuntimeError, PermissionDeniedError) as exc:
+        ) from exc
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
