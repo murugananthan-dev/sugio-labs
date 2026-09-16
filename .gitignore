@@ -32,6 +32,10 @@ ENV/
 node_modules/
 frontend/dist/
 frontend/build/
+backend/frontend_dist/
+backend/build/
+backend/dist/
+installer/output/
 .npm
 *.log
 npm-debug.log*
