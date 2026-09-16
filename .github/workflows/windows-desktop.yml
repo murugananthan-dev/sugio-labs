@@ -29,7 +29,7 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      - name: Stage frontend for desktop bundle
+      - name: Stage frontend for local engine
         shell: pwsh
         run: |
           if (Test-Path backend/frontend_dist) {
@@ -42,59 +42,77 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install desktop build dependencies
+      - name: Install engine build dependencies
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
-          python -m pip install . "pywebview>=5.3,<7" "pyinstaller>=6.10,<7"
+          python -m pip install . "pyinstaller>=6.10,<7"
 
-      - name: Build single-file Windows app
+      - name: Build hidden local engine
         working-directory: backend
         shell: pwsh
         run: |
-          pyinstaller desktop.py `
-            --name SugioLabs `
+          pyinstaller desktop_server.py `
+            --name SugioLabsEngine `
             --onefile `
             --windowed `
             --noconfirm `
             --clean `
             --add-data "frontend_dist;frontend_dist" `
-            --collect-all webview
+            --collect-all langchain_core `
+            --collect-all langchain_community `
+            --collect-all langchain_ollama `
+            --collect-all langgraph `
+            --collect-all ollama
 
-      - name: Self-test packaged EXE
+      - name: Test packaged local engine
         working-directory: backend
         shell: pwsh
         run: |
-          & .\dist\SugioLabs.exe --self-test
-          if ($LASTEXITCODE -ne 0) {
-            throw "SugioLabs.exe self-test failed with exit code $LASTEXITCODE"
+          $port = 18765
+          $process = Start-Process -FilePath ".\dist\SugioLabsEngine.exe" -ArgumentList "--port", "$port" -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 80; $i++) {
+              Start-Sleep -Milliseconds 250
+              try {
+                $health = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/api/v1/health" -TimeoutSec 2
+                $home = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/" -TimeoutSec 2
+                if ($health.StatusCode -eq 200 -and $home.StatusCode -eq 200 -and $home.Content -match "<!doctype html") {
+                  $ready = $true
+                  break
+                }
+              } catch {}
+            }
+            if (-not $ready) {
+              throw "Packaged Sugio Labs engine did not pass its health/UI test."
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
           }
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - name: Build Windows installer
+      - name: Stage engine for Electron
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
-          }
-          & $iscc "installer\SugioLabs.iss"
+          New-Item -ItemType Directory -Force desktop/engine | Out-Null
+          Copy-Item backend/dist/SugioLabsEngine.exe desktop/engine/SugioLabsEngine.exe -Force
 
-      - name: Upload portable EXE
+      - name: Install Electron desktop dependencies
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build Windows desktop software
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:win
+
+      - name: Upload Windows software
         uses: actions/upload-artifact@v4
         with:
-          name: Sugio-Labs-Windows-EXE
-          path: backend/dist/SugioLabs.exe
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: Sugio-Labs-Windows-Installer
-          path: installer/output/Sugio-Labs-Setup.exe
+          name: Sugio-Labs-Windows-Software
+          path: desktop/dist/*.exe
           if-no-files-found: error
           retention-days: 14
