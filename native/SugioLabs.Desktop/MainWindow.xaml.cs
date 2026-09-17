@@ -436,7 +436,6 @@ public partial class MainWindow : Window
     {
         SubmitAnswerButton.IsEnabled = !busy;
         ApproveBlueprintButton.IsEnabled = !busy;
-        RefreshContractsButton.IsEnabled = !busy;
 
         if (busy && !string.IsNullOrWhiteSpace(status))
         {
