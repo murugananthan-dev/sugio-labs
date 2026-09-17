@@ -129,7 +129,20 @@ public sealed class PythonBackendClient : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        await _gate.WaitAsync(cancellationToken);
+
+        using var operationTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        operationTimeout.CancelAfter(command == "chat" ? TimeSpan.FromMinutes(2) : TimeSpan.FromSeconds(45));
+        var token = operationTimeout.Token;
+
+        try
+        {
+            await _gate.WaitAsync(token);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Python backend did not start '{command}' within the allowed time.");
+        }
+
         try
         {
             if (_process is null || _process.HasExited)
@@ -145,33 +158,41 @@ public sealed class PythonBackendClient : IAsyncDisposable
                 payload = payload ?? new { },
             });
 
-            await _process.StandardInput.WriteLineAsync(request.AsMemory(), cancellationToken);
-            await _process.StandardInput.FlushAsync(cancellationToken);
-
-            var line = await _process.StandardOutput.ReadLineAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(line))
+            try
             {
-                throw new InvalidOperationException("Python backend closed the IPC stream unexpectedly.");
+                await _process.StandardInput.WriteLineAsync(request.AsMemory(), token);
+                await _process.StandardInput.FlushAsync(token);
+
+                var line = await _process.StandardOutput.ReadLineAsync(token);
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    throw new InvalidOperationException("Python backend closed the IPC stream unexpectedly.");
+                }
+
+                using var document = JsonDocument.Parse(line);
+                var root = document.RootElement;
+
+                if (!root.TryGetProperty("id", out var responseId) || responseId.GetString() != id)
+                {
+                    throw new InvalidOperationException("Python backend returned an invalid IPC response.");
+                }
+
+                if (!root.GetProperty("ok").GetBoolean())
+                {
+                    var message = root.TryGetProperty("error", out var error) &&
+                                  error.TryGetProperty("message", out var errorMessage)
+                        ? errorMessage.GetString()
+                        : "Unknown Python backend error.";
+                    throw new InvalidOperationException(message);
+                }
+
+                return root.GetProperty("result").Clone();
             }
-
-            using var document = JsonDocument.Parse(line);
-            var root = document.RootElement;
-
-            if (!root.TryGetProperty("id", out var responseId) || responseId.GetString() != id)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new InvalidOperationException("Python backend returned an invalid IPC response.");
+                throw new TimeoutException(
+                    $"Python backend command '{command}' timed out. The operation was stopped so the desktop UI can recover.");
             }
-
-            if (!root.GetProperty("ok").GetBoolean())
-            {
-                var message = root.TryGetProperty("error", out var error) &&
-                              error.TryGetProperty("message", out var errorMessage)
-                    ? errorMessage.GetString()
-                    : "Unknown Python backend error.";
-                throw new InvalidOperationException(message);
-            }
-
-            return root.GetProperty("result").Clone();
         }
         finally
         {
