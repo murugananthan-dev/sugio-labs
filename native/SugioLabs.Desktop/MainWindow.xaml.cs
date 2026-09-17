@@ -10,6 +10,7 @@ public partial class MainWindow : Window
 {
     private readonly PythonBackendClient _backend = new();
     private string _currentQuestionId = string.Empty;
+    private string _readyStatusText = "Python backend online";
 
     public MainWindow()
     {
@@ -25,7 +26,8 @@ public partial class MainWindow : Window
             SetBusy(true, "Starting Python backend...");
             await _backend.StartAsync();
             BackendStatusDot.Fill = Brushes.MediumSpringGreen;
-            BackendStatusText.Text = "Python backend online";
+            _readyStatusText = "Python backend online";
+            BackendStatusText.Text = _readyStatusText;
             AddActivity("Python backend started");
 
             await RefreshSystemAsync();
@@ -225,11 +227,16 @@ public partial class MainWindow : Window
     {
         try
         {
+            SetBusy(true, "Refreshing contract graph...");
             await RefreshContractsAsync();
         }
         catch (Exception ex)
         {
             ShowError(ex);
+        }
+        finally
+        {
+            SetBusy(false);
         }
     }
 
@@ -401,9 +408,10 @@ public partial class MainWindow : Window
         SystemStatusTextBox.Text = Pretty(health);
         if (health.TryGetProperty("ollama_online", out var ollama))
         {
-            BackendStatusText.Text = ollama.GetBoolean()
+            _readyStatusText = ollama.GetBoolean()
                 ? "Python backend online · Ollama connected"
                 : "Python backend online · offline fallback";
+            BackendStatusText.Text = _readyStatusText;
         }
     }
 
@@ -428,13 +436,18 @@ public partial class MainWindow : Window
     {
         SubmitAnswerButton.IsEnabled = !busy;
         ApproveBlueprintButton.IsEnabled = !busy;
-        if (!string.IsNullOrWhiteSpace(status))
+        RefreshContractsButton.IsEnabled = !busy;
+
+        if (busy && !string.IsNullOrWhiteSpace(status))
         {
             BackendStatusText.Text = status;
+            return;
         }
-        else if (!busy && _backend.IsRunning && BackendStatusText.Text.Contains("Starting", StringComparison.OrdinalIgnoreCase))
+
+        if (!busy && _backend.IsRunning &&
+            !string.Equals(BackendStatusText.Text, "Backend unavailable", StringComparison.OrdinalIgnoreCase))
         {
-            BackendStatusText.Text = "Python backend online";
+            BackendStatusText.Text = _readyStatusText;
         }
     }
 
