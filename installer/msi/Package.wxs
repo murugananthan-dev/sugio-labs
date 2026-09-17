@@ -6,6 +6,8 @@
     Version="1.0.0"
     Scope="perMachine">
 
+    <MediaTemplate EmbedCab="yes" />
+
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Sugio Labs">
         <Component Id="MainExecutable" Bitness="always64">
