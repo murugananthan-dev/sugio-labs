@@ -1,0 +1,7 @@
+<Project Sdk="WixToolset.Sdk/6.0.0">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>Sugio-Labs</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+  </PropertyGroup>
+</Project>
