@@ -124,7 +124,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Build Windows installer
+      - name: Build Windows setup EXE
         shell: pwsh
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -132,6 +132,58 @@ jobs:
             $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
           }
           & $iscc "installer\SugioLabs.iss"
+
+      - name: Build native MSI installer
+        shell: pwsh
+        run: |
+          dotnet build installer/msi/SugioLabs.wixproj -c Release
+          New-Item -ItemType Directory -Force installer/output | Out-Null
+          $msi = Get-ChildItem installer/msi/bin -Recurse -Filter "Sugio-Labs.msi" | Select-Object -First 1
+          if (-not $msi) {
+            throw "WiX build completed but Sugio-Labs.msi was not found"
+          }
+          Copy-Item $msi.FullName installer/output/Sugio-Labs.msi -Force
+
+      - name: Smoke-test MSI install and embedded Python backend
+        shell: pwsh
+        run: |
+          $msi = (Resolve-Path "installer/output/Sugio-Labs.msi").Path
+          $install = Start-Process msiexec.exe `
+            -ArgumentList "/i `"$msi`" /qn /norestart" `
+            -Wait `
+            -PassThru
+          if ($install.ExitCode -notin @(0, 3010)) {
+            throw "MSI install failed with exit code $($install.ExitCode)"
+          }
+
+          try {
+            $installedExe = Join-Path $env:ProgramFiles "Sugio Labs\SugioLabs.exe"
+            if (-not (Test-Path $installedExe)) {
+              throw "MSI installed successfully but SugioLabs.exe was not found at $installedExe"
+            }
+
+            $env:SUGIO_SELF_TEST_LOG = "$PWD\native\msi-self-test.log"
+            $selfTest = Start-Process `
+              -FilePath $installedExe `
+              -ArgumentList "--self-test" `
+              -Wait `
+              -PassThru
+            if ($selfTest.ExitCode -ne 0) {
+              if (Test-Path $env:SUGIO_SELF_TEST_LOG) {
+                Get-Content $env:SUGIO_SELF_TEST_LOG
+              }
+              throw "MSI-installed SugioLabs.exe self-test failed with exit code $($selfTest.ExitCode)"
+            }
+          }
+          finally {
+            $uninstall = Start-Process msiexec.exe `
+              -ArgumentList "/x `"$msi`" /qn /norestart" `
+              -Wait `
+              -PassThru
+            if ($uninstall.ExitCode -notin @(0, 3010)) {
+              throw "MSI uninstall failed with exit code $($uninstall.ExitCode)"
+            }
+          }
 
       - name: Upload native portable EXE
         uses: actions/upload-artifact@v4
@@ -146,5 +198,13 @@ jobs:
         with:
           name: Sugio-Labs-Native-Installer
           path: installer/output/Sugio-Labs-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload native MSI installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sugio-Labs-Native-MSI
+          path: installer/output/Sugio-Labs.msi
           if-no-files-found: error
           retention-days: 14
