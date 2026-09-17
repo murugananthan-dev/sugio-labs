@@ -1,0 +1,46 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Id="SugioLabs.Desktop"
+    Name="Sugio Labs"
+    Manufacturer="SUGIO LABSS"
+    Version="1.0.0"
+    Scope="perMachine">
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Sugio Labs">
+        <Component Id="MainExecutable" Bitness="always64">
+          <File
+            Id="SugioLabsExe"
+            Source="..\..\native\publish\SugioLabs.exe"
+            KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Sugio Labs">
+        <Component Id="ApplicationShortcut">
+          <Shortcut
+            Id="StartMenuShortcut"
+            Name="Sugio Labs"
+            Description="Sugio Labs local AI software development workspace"
+            Target="[#SugioLabsExe]"
+            WorkingDirectory="INSTALLFOLDER" />
+          <RemoveFolder Id="RemoveProgramsFolder" On="uninstall" />
+          <RegistryValue
+            Root="HKLM"
+            Key="Software\SUGIO LABSS\Sugio Labs"
+            Name="Installed"
+            Type="integer"
+            Value="1"
+            KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Sugio Labs" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ApplicationShortcut" />
+    </Feature>
+  </Package>
+</Wix>
