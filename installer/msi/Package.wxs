@@ -12,35 +12,23 @@
           <File
             Id="SugioLabsExe"
             Source="..\..\native\publish\SugioLabs.exe"
-            KeyPath="yes" />
+            KeyPath="yes">
+            <Shortcut
+              Id="StartMenuShortcut"
+              Directory="ProgramMenuFolder"
+              Name="Sugio Labs"
+              Description="Sugio Labs local AI software development workspace"
+              WorkingDirectory="INSTALLFOLDER"
+              Advertise="yes" />
+          </File>
         </Component>
       </Directory>
     </StandardDirectory>
 
-    <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ApplicationProgramsFolder" Name="Sugio Labs">
-        <Component Id="ApplicationShortcut">
-          <Shortcut
-            Id="StartMenuShortcut"
-            Name="Sugio Labs"
-            Description="Sugio Labs local AI software development workspace"
-            Target="[#SugioLabsExe]"
-            WorkingDirectory="INSTALLFOLDER" />
-          <RemoveFolder Id="RemoveProgramsFolder" On="uninstall" />
-          <RegistryValue
-            Root="HKLM"
-            Key="Software\SUGIO LABSS\Sugio Labs"
-            Name="Installed"
-            Type="integer"
-            Value="1"
-            KeyPath="yes" />
-        </Component>
-      </Directory>
-    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
 
     <Feature Id="MainFeature" Title="Sugio Labs" Level="1">
       <ComponentRef Id="MainExecutable" />
-      <ComponentRef Id="ApplicationShortcut" />
     </Feature>
   </Package>
 </Wix>
