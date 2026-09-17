@@ -148,11 +148,23 @@ jobs:
         shell: pwsh
         run: |
           $msi = (Resolve-Path "installer/output/Sugio-Labs.msi").Path
+          $installLog = Join-Path $PWD "installer\msi-install.log"
+          $uninstallLog = Join-Path $PWD "installer\msi-uninstall.log"
+
+          Write-Host "Runner identity: $(whoami)"
+          whoami /groups
+
+          $installArgs = "/i `"$msi`" /qn /norestart /l*v `"$installLog`""
           $install = Start-Process msiexec.exe `
-            -ArgumentList "/i `"$msi`" /qn /norestart" `
+            -ArgumentList $installArgs `
             -Wait `
             -PassThru
           if ($install.ExitCode -notin @(0, 3010)) {
+            Write-Host "----- Windows Installer verbose log -----"
+            if (Test-Path $installLog) {
+              Get-Content $installLog | Select-Object -Last 250
+            }
+            Write-Host "-----------------------------------------"
             throw "MSI install failed with exit code $($install.ExitCode)"
           }
 
@@ -176,11 +188,15 @@ jobs:
             }
           }
           finally {
+            $uninstallArgs = "/x `"$msi`" /qn /norestart /l*v `"$uninstallLog`""
             $uninstall = Start-Process msiexec.exe `
-              -ArgumentList "/x `"$msi`" /qn /norestart" `
+              -ArgumentList $uninstallArgs `
               -Wait `
               -PassThru
             if ($uninstall.ExitCode -notin @(0, 3010)) {
+              if (Test-Path $uninstallLog) {
+                Get-Content $uninstallLog | Select-Object -Last 250
+              }
               throw "MSI uninstall failed with exit code $($uninstall.ExitCode)"
             }
           }
